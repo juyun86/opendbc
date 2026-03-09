@@ -44,7 +44,7 @@ STEER_DESIRED_LIMITER_OVERRIDE_ACTIVE_COUNTER = 3.0 # second
 
 
 CoopSteeringDataSP = namedtuple("CoopSteeringDataSP",
-                                ["steeringAngleDeg", "lat_active"])
+                                ["steeringAngleDeg", "lat_active", "control_type"])
 
 def get_steer_from_lat_accel(lat_accel, vEgo: float, VM: VehicleModel):
   """Calculate the maximum steering angle based on lateral acceleration."""
@@ -274,13 +274,14 @@ class CoopSteeringCarController:
 
   def update(self, apply_angle, lat_active, CP_SP: structs.CarParamsSP, CS: structs.CarState, VM: VehicleModel) -> CoopSteeringDataSP:
     angle_coop_enabled = CP_SP.flags & TeslaFlagsSP.COOP_STEERING.value
+    control_type = 2 if angle_coop_enabled else 1
 
     # avoid sudden rotation on engagement
     apply_angle = self.resume_steer_desired_rate_limit(lat_active, apply_angle)
 
     if not lat_active or not angle_coop_enabled:
       self.reset_override_state(apply_angle)
-      return CoopSteeringDataSP(apply_angle, lat_active)
+      return CoopSteeringDataSP(apply_angle, lat_active, control_type)
 
     # apply_angle = self.overriding_steer_desired_accel_limit(apply_angle, CS.out.vEgo, CS.out.steeringTorque)
     self.debug_angle_desired_limited = apply_angle #! debug
@@ -303,4 +304,4 @@ class CoopSteeringCarController:
     sat_error = apply_angle - self.coop_apply_angle_sat_last
     self.angle_override = self.unwind_on_saturation(self.angle_override, sat_error)
 
-    return CoopSteeringDataSP(self.coop_apply_angle_sat_last, lat_active)
+    return CoopSteeringDataSP(self.coop_apply_angle_sat_last, lat_active, control_type)
