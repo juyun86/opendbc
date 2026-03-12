@@ -27,6 +27,8 @@
 #define TESLA_GATEWAY_CONFIG_MIN_INTERVAL_US 25000U
 #define TESLA_GATEWAY_CONFIG_STATE_TIMEOUT_US 500000U
 
+#define TESLA_STEERING_DISENGAGE_TORQUE 500 // cNm
+
 static bool tesla_longitudinal = false;
 static bool tesla_fsd_14 = false;
 static bool tesla_stock_aeb = false;
