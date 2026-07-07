@@ -36,14 +36,6 @@ def create_sccm_left_stalk(turn_state: int, counter: int) -> CanData:
   return CanData(SCCM_LEFT_STALK_ADDRESS, bytes(data), CANBUS.vehicle)
 
 
-def get_steer_ctrl_type(flags: int, ctrl_type: int) -> int:
-  # Returns the flipped signal value for DAS_steeringControlType on FSD 14
-  if flags & TeslaFlags.FSD_14:
-    return {1: 2, 2: 1}.get(ctrl_type, ctrl_type)
-  else:
-    return ctrl_type
-
-
 class TeslaCAN:
   def __init__(self, CP, packer):
     self.CP = CP
@@ -51,14 +43,14 @@ class TeslaCAN:
     self.jerk = 0.0
 
   def create_steering_control(self, angle, enabled, control_type=1):
-    # On FSD 14+, ANGLE_CONTROL behavior changed to allow user winddown while actuating.
-    # with openpilot, after overriding w/ ANGLE_CONTROL the wheel snaps back to the original angle abruptly
-    # so we now use LANE_KEEP_ASSIST to match stock FSD.
-    # see carstate.py for more details
+    control_type = control_type if enabled else 0
+    if self.CP.flags & TeslaFlags.LEGACY_DAS_STEERING:
+      control_type <<= 1  # legacy firmware uses a 2-bit field, one bit up from the 3-bit signal
+
     values = {
       "DAS_steeringAngleRequest": -angle,
       "DAS_steeringHapticRequest": 0,
-      "DAS_steeringControlType": get_steer_ctrl_type(self.CP.flags, control_type if enabled else 0),
+      "DAS_steeringControlType": control_type,
     }
 
     return self.packer.make_can_msg("DAS_steeringControl", CANBUS.party, values)
@@ -67,7 +59,7 @@ class TeslaCAN:
     values = {
       "DAS_steeringAngleRequest": -steering_angle,
       "DAS_steeringHapticRequest": 0,
-      "DAS_steeringControlType": 3,  # Internal handoff marker; panda safety blocks this frame.
+      "DAS_steeringControlType": 7,  # Internal handoff marker; panda safety blocks this frame.
     }
     return self.packer.make_can_msg("DAS_steeringControl", CANBUS.party, values)
 

@@ -15,7 +15,7 @@ from opendbc.car.tesla.interface import CarInterface
 from opendbc.car.tesla.fingerprints import FW_VERSIONS
 from opendbc.car.tesla.radar_interface import RADAR_START_ADDR
 from opendbc.car.tesla.teslacan import TeslaCAN, create_sccm_left_stalk
-from opendbc.car.tesla.values import CANBUS, CAR, FSD_14_FW, TeslaFlags, TeslaSafetyFlags
+from opendbc.car.tesla.values import CANBUS, CAR, LEGACY_DAS_STEERING_FW
 from opendbc.sunnypilot.car.tesla.carstate_ext import (AP_HYBRID_EXIT_RECOVERY_CONFIRM_SAMPLES, CarStateExt,
                                                         TeslaLongitudinalSource, publish_tesla_road_context)
 from opendbc.sunnypilot.car.tesla import dynamic_acc_debug
@@ -98,19 +98,7 @@ PLATFORM_TO_CAR = {
   b'X': CAR.TESLA_MODEL_X,
 }
 
-# Hypothesized FSD 14 profile, in terms of variant_code bookends (given software_major >= 4):
-#   M3: variant_code starts with '4H',  ends with '015'
-#   MY: variant_code starts with '4',   ends with '003'
-# Older series (M3 '014', MY '002') are never FSD 14.
-FSD_14_FW_RULE = {
-  CAR.TESLA_MODEL_3: (b'4H', b'015'),
-  CAR.TESLA_MODEL_Y: (b'4',  b'003'),
-}
-
-
 class TestTeslaFingerprint(unittest.TestCase):
-  OBSERVED_MODEL_Y_PRE_FSD_14_EPS_FW = b'TeMYG4_Main_0.0.0 (67),Y4C003.03.1'
-
   def test_fw_platform_code(self):
     # Every EPS FW must parse and its platform letter must match the car it's filed under.
     for car_model, ecus in FW_VERSIONS.items():
@@ -120,38 +108,11 @@ class TestTeslaFingerprint(unittest.TestCase):
         assert m is not None, f"Unparsable FW: {fw}"
         assert PLATFORM_TO_CAR[m['platform']] == car_model, f"Platform letter {m['platform']!r} != {car_model.value}: {fw}"
 
-  def test_fsd_14_fw(self):
-    for car_model, ecus in FW_VERSIONS.items():
-      if car_model not in FSD_14_FW_RULE:
-        continue
-
-      variant_prefix, variant_suffix = FSD_14_FW_RULE[car_model]
-      for fw in ecus.get((Ecu.eps, 0x730, None), []):
-        m = FW_RE.match(fw)
-        assert m is not None, f"Unparsable FW: {fw}"
-
-        is_fsd_14 = fw in FSD_14_FW.get(car_model, [])
-        expected = (
-          m['variant_code'].startswith(variant_prefix)
-          and m['variant_code'].endswith(variant_suffix)
-          and int(m['software_major']) >= 4
-        )
-        assert is_fsd_14 == expected, f"{fw}"
-
-  def test_observed_model_y_03_firmware_keeps_pre_fsd_14_steering_semantics(self):
-    fw = self.OBSERVED_MODEL_Y_PRE_FSD_14_EPS_FW
-    car_fw = [CarParams.CarFw.new_message(ecu=Ecu.eps, address=0x730, fwVersion=fw)]
-
-    self.assertIn(fw, FW_VERSIONS[CAR.TESLA_MODEL_Y][(Ecu.eps, 0x730, None)])
-    self.assertNotIn(fw, FSD_14_FW[CAR.TESLA_MODEL_Y])
-
-    cp = CarInterface.get_params(CAR.TESLA_MODEL_Y, gen_empty_fingerprint(), car_fw, False, False, False)
-    self.assertFalse(cp.flags & TeslaFlags.FSD_14)
-    self.assertFalse(cp.safetyConfigs[0].safetyParam & TeslaSafetyFlags.FSD_14)
-
-    tesla_can = TeslaCAN(cp, CANPacker("tesla_model3_party"))
-    _, steering_control, _ = tesla_can.create_steering_control(0.0, True)
-    self.assertEqual(1, steering_control[2] >> 6)
+  def test_legacy_das_steering_fw(self):
+    for car_model, fws in LEGACY_DAS_STEERING_FW.items():
+      known = {fw for fws_list in FW_VERSIONS.get(car_model, {}).values() for fw in fws_list}
+      for fw in fws:
+        self.assertIn(fw, known, f"Legacy FW not in FW_VERSIONS for {car_model.value}: {fw}")
 
   def test_radar_detection(self):
     # Test radar availability detection for cars with radar DBC defined.
@@ -1006,4 +967,4 @@ class TestTeslaLongitudinalHandoff(unittest.TestCase):
     tesla_can = TeslaCAN(SimpleNamespace(flags=0), CANPacker("tesla_model3_party"))
     _, actual, _ = tesla_can.create_stock_lateral_handoff(12.5)
 
-    self.assertEqual(3, actual[2] >> 6)
+    self.assertEqual(7, (actual[2] >> 5) & 0x07)

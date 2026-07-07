@@ -30,7 +30,7 @@
 #define TESLA_STEERING_DISENGAGE_TORQUE 500 // cNm
 
 static bool tesla_longitudinal = false;
-static bool tesla_fsd_14 = false;
+static bool tesla_legacy_das_steering = false;
 static bool tesla_stock_aeb = false;
 
 // Only rising edges while controls are not allowed are considered for these systems:
@@ -203,18 +203,9 @@ static bool tesla_get_quality_flag_valid(const CANPacket_t *msg) {
   return valid;
 }
 
-static int tesla_get_steer_ctrl_type(const int ctrl_type) {
-  // Returns ANGLE_CONTROL-equivalent control type for FSD 14
-  int steer_ctrl_type = ctrl_type;
-  if (tesla_fsd_14) {
-    if (ctrl_type == 1) {
-      steer_ctrl_type = 2;
-    } else if (ctrl_type == 2) {
-      steer_ctrl_type = 1;
-    } else {
-    }
-  }
-  return steer_ctrl_type;
+static int tesla_get_steer_ctrl_type(const uint8_t byte2) {
+  // Older Tesla firmware used a 2-bit field (now 3-bit) for DAS_steeringControlType.
+  return tesla_legacy_das_steering ? (byte2 >> 6) : ((byte2 >> 5) & 0x07U);
 }
 
 static void tesla_ambient_rx_observer(const CANPacket_t *msg) {
@@ -419,15 +410,13 @@ static bool tesla_tx_hook(const CANPacket_t *msg) {
     // We use 1/10 deg as a unit here
     int raw_angle_can = ((msg->data[0] & 0x7FU) << 8) | msg->data[1];
     int desired_angle = raw_angle_can - 16384;
-    int steer_control_type = msg->data[2] >> 6;
-    const int angle_ctrl_type = tesla_get_steer_ctrl_type(1);
-    const int lkas_ctrl_type = tesla_get_steer_ctrl_type(2);
-    bool steer_control_enabled = (steer_control_type == angle_ctrl_type) ||  // ANGLE_CONTROL
-                                 (steer_control_type == lkas_ctrl_type);     // LANE_KEEP_ASSIST
+    int steer_control_type = tesla_get_steer_ctrl_type(msg->data[2]);
+    bool steer_control_enabled = (steer_control_type == 1) ||  // ANGLE_CONTROL
+                                 (steer_control_type == 2);    // LANE_KEEP_ASSIST
 
-    // Control type 3 is reserved as an internal AP lateral handoff marker.
+    // Control type 7 is reserved as an internal AP lateral handoff marker.
     // It opens OEM steering forwarding and is never transmitted to the vehicle.
-    if (tesla_ap_hybrid_lateral_handoff && (steer_control_type == 3)) {
+    if (tesla_ap_hybrid_lateral_handoff && (steer_control_type == 7)) {
       tesla_ap_stock_lateral_active = true;
       return false;
     }
@@ -438,8 +427,8 @@ static bool tesla_tx_hook(const CANPacket_t *msg) {
     }
 
     bool valid_steer_control_type = (steer_control_type == 0) ||  // NONE
-                                    (steer_control_type == angle_ctrl_type) ||  // ANGLE_CONTROL
-                                    (steer_control_type == lkas_ctrl_type);     // LANE_KEEP_ASSIST
+                                    (steer_control_type == 1) ||  // ANGLE_CONTROL
+                                    (steer_control_type == 2);    // LANE_KEEP_ASSIST
     if (!valid_steer_control_type) {
       violation = true;
     }
@@ -756,8 +745,8 @@ static safety_config tesla_init(uint16_t param) {
     {0x301, 1, 2, .check_relay = false, .disable_static_blocking = true},
   };
 
-  const uint16_t TESLA_FLAG_FSD_14 = 2;
-  tesla_fsd_14 = GET_FLAG(param, TESLA_FLAG_FSD_14);
+  const uint16_t TESLA_FLAG_LEGACY_DAS_STEERING = 2;
+  tesla_legacy_das_steering = GET_FLAG(param, TESLA_FLAG_LEGACY_DAS_STEERING);
 
 #ifdef ALLOW_DEBUG
   const uint16_t TESLA_FLAG_LONGITUDINAL_CONTROL = 1;
