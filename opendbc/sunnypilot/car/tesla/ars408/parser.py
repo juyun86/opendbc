@@ -44,9 +44,11 @@ class ARS408Parser:
     if address == ARS408_STATUS:
       return ObjectStatus(int(values["Obj_NofObjects"]), int(values["Obj_MeasCounter"]), int(values["Obj_InterfaceVersion"]))
     if address == ARS408_GENERAL:
+      # This integration mounts the sensor with 180-degree roll. Convert both
+      # lateral axes back to the vehicle/openpilot frame, where left is positive.
       return ObjectGeneral(
         raw_id=int(values["Obj_ID"]), d_rel=float(values["Obj_DistLong"]), y_rel=-float(values["Obj_DistLat"]),
-        v_rel=float(values["Obj_VrelLong"]), yv_rel=float(values["Obj_VrelLat"]), rcs=float(values["Obj_RCS"]),
+        v_rel=float(values["Obj_VrelLong"]), yv_rel=-float(values["Obj_VrelLat"]), rcs=float(values["Obj_RCS"]),
         dynamic_property=int(values["Obj_DynProp"]),
       )
     if address == ARS408_QUALITY:

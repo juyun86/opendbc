@@ -30,6 +30,7 @@ def test_parser_decodes_sensor_zero_object_frames(packer: CANPacker) -> None:
   assert parsed.d_rel == pytest.approx(40.0)
   assert parsed.y_rel == pytest.approx(1.2)
   assert parsed.v_rel == pytest.approx(-2.0)
+  assert parsed.yv_rel == pytest.approx(-0.5)
 
 
 def test_parser_rejects_wrong_bus_dlc_and_non_protocol_address(packer: CANPacker) -> None:
