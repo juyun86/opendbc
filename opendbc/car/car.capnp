@@ -319,6 +319,12 @@ struct RadarData @0x888ad6581cf0aacb {
     yRel @2 :Float32;    # m
     vRel @3 :Float32;    # m/s
 
+    # Optional source-radar metadata. Defaults preserve compatibility for radar
+    # interfaces that do not publish classifications.
+    objectClass @7 :UInt8 = 7;      # ARS408: 0 point, 1 car, 2 truck, 3 pedestrian, 4 motorcycle, 5 bicycle, 6 wide, 7 unknown
+    existenceProbability @8 :UInt8; # ARS408 encoded probability level, 0..7
+    dynamicProperty @9 :UInt8 = 4;  # ARS408: 0 moving, 1 stationary, 2 oncoming, 3 stationary candidate, 4 unknown, 5 crossing stationary, 6 crossing moving, 7 stopped
+
     deprecated :group {
       aRel @4 :Float32; # m/s^2
       yvRel @5 :Float32; # m/s

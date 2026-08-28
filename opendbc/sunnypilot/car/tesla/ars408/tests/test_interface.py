@@ -53,9 +53,12 @@ def test_waits_for_radar_state_before_publishing_standard_points() -> None:
     (40.0, -1.5, -2.0, 0.2, 0.0),
   )
   assert point.deprecated.measured
+  assert point.objectClass == 7
+  assert point.existenceProbability == 4
+  assert point.dynamicProperty == 0
 
 
-def test_internal_metadata_does_not_require_schema_fields() -> None:
+def test_internal_metadata_is_published_as_optional_radar_point_fields() -> None:
   frames: list[ParsedFrame] = [
     radar_state(), ObjectStatus(1, 1, 1), ObjectGeneral(9, 20.0, 0.0, 0.0, 0.0, 1.0, 0),
     ObjectQuality(9, 6, 2), ObjectStatus(0, 2, 1),
@@ -65,7 +68,9 @@ def test_internal_metadata_does_not_require_schema_fields() -> None:
   assert result is not None and result.points[0].trackId == 9
   track = radar.tracker._tracks[9]
   assert track.obj.quality.probability == 6
-  assert not hasattr(result.points[0], "objectClass")
+  assert result.points[0].objectClass == 7
+  assert result.points[0].existenceProbability == 6
+  assert result.points[0].dynamicProperty == 0
 
 
 def test_radar_state_faults_map_to_standard_errors() -> None:

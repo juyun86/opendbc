@@ -94,6 +94,9 @@ class ARS408RadarInterface(RadarInterfaceBase):
       point.deprecated.yvRel = track.yv_rel
       point.deprecated.aRel = track.a_rel
       point.deprecated.measured = track.measured
+      point.objectClass = track.object_class
+      point.existenceProbability = track.probability
+      point.dynamicProperty = track.dynamic_property
       points.append(point)
     ret.points = points
     return ret
