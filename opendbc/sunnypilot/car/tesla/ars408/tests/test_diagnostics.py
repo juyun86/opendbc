@@ -63,13 +63,77 @@ def test_fault_mapping_interference_confirmation_and_recovery() -> None:
 def test_wrong_config_waits_for_state_report_grace() -> None:
   diagnostics = ARS408Diagnostics(0)
   bad = radar_state(sensor_id=5, output_type=2, quality_enabled=False, max_distance_m=200)
-  for now in range(CONFIG_GRACE_REPORTS - 1):
+  for now in range(1, CONFIG_GRACE_REPORTS):
     diagnostics.observe_radar_state(bad, now)
-  assert not diagnostics.snapshot(CONFIG_GRACE_REPORTS - 2, parser_valid=True).errors.wrong_config
+  assert not diagnostics.snapshot(CONFIG_GRACE_REPORTS - 1, parser_valid=True).errors.wrong_config
   diagnostics.observe_radar_state(bad, CONFIG_GRACE_REPORTS)
   assert diagnostics.snapshot(CONFIG_GRACE_REPORTS, parser_valid=True).errors.wrong_config
   diagnostics.observe_radar_state(radar_state(extended_enabled=False, motion_rx_state=3), CONFIG_GRACE_REPORTS + 1)
   assert not diagnostics.snapshot(CONFIG_GRACE_REPORTS + 1, parser_valid=True).errors.wrong_config
+
+
+def test_radar_state_source_time_must_strictly_advance_and_recovers() -> None:
+  diagnostics = ARS408Diagnostics(0)
+  source_time = STARTUP_GRACE_NS
+  diagnostics.observe_status(ObjectStatus(0, 1, 1), source_time)
+  accepted = radar_state(interference=False)
+  assert diagnostics.observe_radar_state(accepted, source_time, source_time_ns=source_time)
+  assert diagnostics.radar_state == diagnostics.trusted_radar_state == accepted
+  assert diagnostics.trusted_radar_state_source_ns == source_time
+  assert diagnostics.last_radar_state_ns == source_time
+  assert diagnostics.trusted_radar_state_timestamp_valid
+
+  replay = radar_state(interference=True, voltage_error=True)
+  assert not diagnostics.observe_radar_state(replay, source_time, source_time_ns=source_time)
+  assert diagnostics.radar_state == replay and diagnostics.radar_state_count == 2
+  assert diagnostics.interference_count == 1
+  assert diagnostics.trusted_radar_state == accepted and diagnostics.trusted_radar_state_count == 1
+  assert diagnostics.trusted_interference_count == 0
+  assert not diagnostics.trusted_radar_state_timestamp_valid
+  failed_closed = diagnostics.snapshot(source_time, parser_valid=True)
+  assert failed_closed.radar_state_ready and failed_closed.errors.radar_fault
+  assert not failed_closed.trusted_radar_state_ready and failed_closed.trusted_errors.can_error
+
+  assert not diagnostics.observe_radar_state(replay, source_time + 1, source_time_ns=source_time - 1)
+  assert not diagnostics.observe_radar_state(replay, source_time + 2, source_time_ns=0)
+  assert diagnostics.trusted_radar_state == accepted
+  assert diagnostics.trusted_radar_state_source_ns == source_time
+
+  recovered_time = source_time + 1
+  arrival_time = source_time + 3
+  diagnostics.observe_status(ObjectStatus(0, 2, 1), arrival_time)
+  assert diagnostics.observe_radar_state(replay, arrival_time, source_time_ns=recovered_time)
+  assert diagnostics.radar_state == diagnostics.trusted_radar_state == replay
+  assert diagnostics.trusted_radar_state_count == 2
+  assert diagnostics.trusted_radar_state_timestamp_valid
+  recovered = diagnostics.snapshot(arrival_time, parser_valid=True)
+  assert recovered.radar_state_ready and recovered.trusted_radar_state_ready
+  assert not recovered.errors.can_error and not recovered.trusted_errors.can_error
+  assert recovered.errors.radar_fault and recovered.trusted_errors.radar_fault
+
+
+def test_trusted_source_epoch_is_independent_and_old_good_cannot_clear_fault() -> None:
+  host_start = 20_000_000_000
+  diagnostics = ARS408Diagnostics(host_start)
+  diagnostics.observe_status(ObjectStatus(0, 1, 1), host_start)
+  bad = radar_state(voltage_error=True)
+  assert diagnostics.observe_radar_state(bad, host_start, source_time_ns=10)
+  assert diagnostics.trusted_radar_state == bad
+  assert diagnostics.snapshot(host_start, parser_valid=True).trusted_errors.radar_fault
+
+  old_good = radar_state()
+  assert not diagnostics.observe_radar_state(old_good, host_start + 1, source_time_ns=9)
+  blocked = diagnostics.snapshot(host_start + 1, parser_valid=True)
+  assert diagnostics.radar_state == old_good  # standard arrival-time path is unchanged
+  assert diagnostics.trusted_radar_state == bad
+  assert not blocked.trusted_radar_state_ready
+  assert blocked.trusted_errors.can_error and blocked.trusted_errors.radar_fault
+
+  diagnostics.observe_status(ObjectStatus(0, 2, 1), host_start + 2)
+  assert diagnostics.observe_radar_state(old_good, host_start + 2, source_time_ns=11)
+  recovered = diagnostics.snapshot(host_start + 2, parser_valid=True)
+  assert recovered.trusted_radar_state_ready
+  assert not recovered.trusted_errors.can_error and not recovered.trusted_errors.radar_fault
 
 
 def test_filter_and_cycle_state_is_internal_and_bounded() -> None:

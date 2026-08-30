@@ -21,10 +21,18 @@ class ARS408Diagnostics:
       raise ValueError("start_time_ns must be non-negative")
     self.start_time_ns = start_time_ns
     self.last_status_ns: int | None = None
+    # Legacy/standard RadarData diagnostics use host arrival time and preserve
+    # their established behavior independently of shadow metadata validation.
     self.last_radar_state_ns: int | None = None
     self.radar_state: RadarStateSnapshot | None = None
     self.radar_state_count = 0
     self.interference_count = 0
+    # Shadow perception only trusts strictly advancing frame source times.
+    self.trusted_radar_state_source_ns: int | None = None
+    self.trusted_radar_state_timestamp_valid = False
+    self.trusted_radar_state: RadarStateSnapshot | None = None
+    self.trusted_radar_state_count = 0
+    self.trusted_interference_count = 0
     self.exact_cycles = 0
     self.partial_cycles = 0
     self.invalid_cycles = 0
@@ -45,8 +53,11 @@ class ARS408Diagnostics:
     self.last_status_ns = now_ns
     self.raw_object_count = status.object_count
 
-  def observe_radar_state(self, state: RadarStateSnapshot, now_ns: int) -> None:
+  def observe_radar_state(self, state: RadarStateSnapshot, now_ns: int, *,
+                          source_time_ns: int | None = None) -> bool:
     self._validate_time(now_ns)
+    # Always preserve the legacy arrival-time path used by standard errors and
+    # RadarData. Source metadata must not alter its behavior.
     self.radar_state = state
     self.last_radar_state_ns = now_ns
     self.radar_state_count += 1
@@ -59,6 +70,21 @@ class ARS408Diagnostics:
     if signature != self._last_state_signature:
       self._safe_log("warning", {"event": "ars408RadarState", "state": signature})
       self._last_state_signature = signature
+
+    trusted_source_ns = now_ns if source_time_ns is None else source_time_ns
+    previous_source_ns = self.trusted_radar_state_source_ns
+    if trusted_source_ns <= 0 or (previous_source_ns is not None and trusted_source_ns <= previous_source_ns):
+      # Keep the last accepted trusted state for fault diagnosis, but make it
+      # unusable until a strictly newer frame arrives. Replayed/out-of-order
+      # frames never refresh trusted configuration or interference counters.
+      self.trusted_radar_state_timestamp_valid = False
+      return False
+    self.trusted_radar_state = state
+    self.trusted_radar_state_source_ns = trusted_source_ns
+    self.trusted_radar_state_timestamp_valid = True
+    self.trusted_radar_state_count += 1
+    self.trusted_interference_count = self.trusted_interference_count + 1 if state.interference else 0
+    return True
 
   def observe_filter_header(self, header: FilterStateHeader) -> None:
     self.filter_header = header
@@ -109,6 +135,25 @@ class ARS408Diagnostics:
       state.sensor_id != ARS408_SENSOR_ID or state.output_type != 1 or not state.quality_enabled or
       state.max_distance_m != int(ARS408_MAX_DISTANCE_M)
     ))
+
+    trusted_state = self.trusted_radar_state
+    trusted_output_enabled = trusted_state is None or trusted_state.output_type == 1
+    trusted_status_stale = trusted_output_enabled and self._stale(self.last_status_ns, now_ns, STATUS_TIMEOUT_NS)
+    # Source timestamps may use a different monotonic epoch than the host.
+    # Diagnostics validates only strict source ordering; interface owns the
+    # source-clock anchor and freshness comparison.
+    trusted_state_invalid = not self.trusted_radar_state_timestamp_valid
+    trusted_can_error = trusted_state_invalid or \
+      (after_startup_grace and (not parser_valid or trusted_status_stale))
+    trusted_hard_fault = bool(trusted_state and (trusted_state.voltage_error or trusted_state.persistent_error))
+    trusted_temporary_fault = bool(trusted_state and (
+      trusted_state.temperature_error or trusted_state.temporary_error or
+      self.trusted_interference_count >= INTERFERENCE_CONFIRM_REPORTS
+    ))
+    trusted_wrong_config = bool(trusted_state and self.trusted_radar_state_count >= CONFIG_GRACE_REPORTS and (
+      trusted_state.sensor_id != ARS408_SENSOR_ID or trusted_state.output_type != 1 or
+      not trusted_state.quality_enabled or trusted_state.max_distance_m != int(ARS408_MAX_DISTANCE_M)
+    ))
     return DiagnosticsSnapshot(
       errors=DiagnosticErrors(can_error, hard_fault, temporary_fault, wrong_config),
       radar_state_ready=state is not None,
@@ -123,6 +168,12 @@ class ARS408Diagnostics:
       grace_held_tracks=self.grace_held_tracks,
       filter_header=self.filter_header,
       filter_records=tuple(self.filter_records[index] for index in sorted(self.filter_records)),
+      trusted_errors=DiagnosticErrors(
+        trusted_can_error, trusted_hard_fault, trusted_temporary_fault, trusted_wrong_config,
+      ),
+      trusted_radar_state_ready=trusted_state is not None and self.trusted_radar_state_timestamp_valid,
+      trusted_radar_state_count=self.trusted_radar_state_count,
+      trusted_interference_count=self.trusted_interference_count,
     )
 
   @staticmethod

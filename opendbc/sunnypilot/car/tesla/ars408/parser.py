@@ -5,6 +5,7 @@ from opendbc.car.can_definitions import CanData
 from opendbc.sunnypilot.car.tesla.ars408.constants import (
   ARS408_BUS, ARS408_DBC, ARS408_EXTENDED, ARS408_FILTER_STATE_CONFIG, ARS408_FILTER_STATE_HEADER,
   ARS408_GENERAL, ARS408_QUALITY, ARS408_RADAR_STATE, ARS408_RX_DLC, ARS408_STATUS, FILTER_SIGNAL_SPECS,
+  SENSOR_TO_OPENPILOT_LATERAL_SIGN,
 )
 from opendbc.sunnypilot.car.tesla.ars408.models import (
   FilterStateHeader, FilterStateRecord, ObjectExtended, ObjectGeneral, ObjectQuality, ObjectStatus, ParsedFrame,
@@ -21,6 +22,11 @@ MESSAGE_NAMES: dict[int, str] = {
   ARS408_QUALITY: "Obj_2_Quality",
   ARS408_EXTENDED: "Obj_3_Extended",
 }
+
+
+def _sensor_to_openpilot_lateral(value: float) -> float:
+  """Reflect a sensor-frame lateral scalar into the openpilot frame."""
+  return SENSOR_TO_OPENPILOT_LATERAL_SIGN * value
 
 
 class ARS408Parser:
@@ -41,18 +47,41 @@ class ARS408Parser:
     self.can_parser.update([(timestamp, [frame])])
     values = self.can_parser.vl[MESSAGE_NAMES[address]]
 
+    try:
+      return self._parse_values(address, data, values)
+    except (OverflowError, ValueError):
+      # The DBC covers the complete raw bit range, while the ARS408 protocol
+      # reserves some decoded values. Reject those frames without taking down
+      # the radar interface.
+      self.rejected_frames += 1
+      return None
+
+  @staticmethod
+  def _parse_values(address: int, data: bytes, values: dict[str, float]) -> ParsedFrame | None:
     if address == ARS408_STATUS:
       return ObjectStatus(int(values["Obj_NofObjects"]), int(values["Obj_MeasCounter"]), int(values["Obj_InterfaceVersion"]))
     if address == ARS408_GENERAL:
       return ObjectGeneral(
-        raw_id=int(values["Obj_ID"]), d_rel=float(values["Obj_DistLong"]), y_rel=-float(values["Obj_DistLat"]),
-        v_rel=float(values["Obj_VrelLong"]), yv_rel=float(values["Obj_VrelLat"]), rcs=float(values["Obj_RCS"]),
+        raw_id=int(values["Obj_ID"]), d_rel=float(values["Obj_DistLong"]),
+        y_rel=_sensor_to_openpilot_lateral(float(values["Obj_DistLat"])), v_rel=float(values["Obj_VrelLong"]),
+        yv_rel=_sensor_to_openpilot_lateral(float(values["Obj_VrelLat"])), rcs=float(values["Obj_RCS"]),
         dynamic_property=int(values["Obj_DynProp"]),
       )
     if address == ARS408_QUALITY:
-      return ObjectQuality(int(values["Obj_ID"]), int(values["Obj_ProbOfExist"]), int(values["Obj_MeasState"]))
+      return ObjectQuality(
+        raw_id=int(values["Obj_ID"]), probability=int(values["Obj_ProbOfExist"]),
+        measurement_state=int(values["Obj_MeasState"]), dist_long_rms=int(values["Obj_DistLong_rms"]),
+        vrel_long_rms=int(values["Obj_VrelLong_rms"]), dist_lat_rms=int(values["Obj_DistLat_rms"]),
+        vrel_lat_rms=int(values["Obj_VrelLat_rms"]), arel_lat_rms=int(values["Obj_ArelLat_rms"]),
+        arel_long_rms=int(values["Obj_ArelLong_rms"]), orientation_rms=int(values["Obj_Orientation_rms"]),
+      )
     if address == ARS408_EXTENDED:
-      return ObjectExtended(int(values["Obj_ID"]), float(values["Obj_ArelLong"]), int(values["Obj_Class"]))
+      return ObjectExtended(
+        raw_id=int(values["Obj_ID"]), a_rel=float(values["Obj_ArelLong"]), object_class=int(values["Obj_Class"]),
+        a_rel_lat=_sensor_to_openpilot_lateral(float(values["Obj_ArelLat"])),
+        orientation_angle=_sensor_to_openpilot_lateral(float(values["Obj_OrientationAngle"])),
+        length=float(values["Obj_Length"]), width=float(values["Obj_Width"]),
+      )
     if address == ARS408_RADAR_STATE:
       return RadarStateSnapshot(
         interference=bool(values["RadarState_Interference"]), voltage_error=bool(values["RadarState_Voltage_Error"]),
@@ -66,7 +95,7 @@ class ARS408Parser:
       )
     if address == ARS408_FILTER_STATE_HEADER:
       return FilterStateHeader(int(values["FilterState_NofClusterFilterCfg"]), int(values["FilterState_NofObjectFilterCfg"]))
-    return self._parse_filter_state(data)
+    return ARS408Parser._parse_filter_state(data)
 
   @staticmethod
   def _parse_filter_state(data: bytes) -> FilterStateRecord | None:

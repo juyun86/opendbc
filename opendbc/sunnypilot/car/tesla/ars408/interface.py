@@ -35,12 +35,13 @@ class ARS408RadarInterface(RadarInterfaceBase):
     now_ns = self._clock()
     latest_result: TrackerResult | None = None
     for timestamp, frames in can_packets:
+      source_time_ns = int(timestamp)
       for frame in frames:
         parsed = self.parser.parse(timestamp, frame)
         if parsed is None:
           continue
         if isinstance(parsed, RadarStateSnapshot):
-          self.diagnostics.observe_radar_state(parsed, now_ns)
+          self.diagnostics.observe_radar_state(parsed, now_ns, source_time_ns=source_time_ns)
           continue
         if isinstance(parsed, FilterStateHeader):
           self.diagnostics.observe_filter_header(parsed)
@@ -52,7 +53,7 @@ class ARS408RadarInterface(RadarInterfaceBase):
           self.diagnostics.observe_status(parsed, now_ns)
         if not isinstance(parsed, (ObjectStatus, ObjectGeneral, ObjectQuality, ObjectExtended)):
           continue
-        cycle = self.assembler.push(parsed)
+        cycle = self.assembler.push(parsed, int(timestamp))
         if cycle is None:
           continue
         max_distance_m = self._max_distance_m()

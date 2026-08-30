@@ -8,6 +8,14 @@ ARS408_SENSOR_ID = 0
 ARS408_MAX_DISTANCE_M = 250.0
 ARS408_MAX_OBJECTS = 100
 
+# The protocol reports lateral quantities in the sensor coordinate frame. This
+# integration reflects that axis into the openpilot frame. The same transform
+# must be applied to lateral position, velocity, acceleration, and orientation.
+# No installation-specific left/right capture currently verifies the physical
+# sign, so consumers must not treat the sign as road-validated evidence.
+SENSOR_TO_OPENPILOT_LATERAL_SIGN = -1.0
+LATERAL_KINEMATICS_VERIFIED = False
+
 ARS408_RADAR_CONFIG = 0x200
 ARS408_RADAR_STATE = 0x201
 ARS408_FILTER_CONFIG = 0x202
@@ -44,6 +52,52 @@ class MeasurementState(IntEnum):
   PREDICTED = 3
   DELETED_FOR_MERGE = 4
   NEW_FROM_MERGE = 5
+
+
+class DynamicProperty(IntEnum):
+  MOVING = 0
+  STATIONARY = 1
+  ONCOMING = 2
+  STATIONARY_CANDIDATE = 3
+  UNKNOWN = 4
+  CROSSING_STATIONARY = 5
+  CROSSING_MOVING = 6
+  STOPPED = 7
+
+
+class ObjectClass(IntEnum):
+  POINT = 0
+  CAR = 1
+  TRUCK = 2
+  PEDESTRIAN = 3
+  MOTORCYCLE = 4
+  BICYCLE = 5
+  WIDE = 6
+  RESERVED = 7
+
+
+class MotionRxState(IntEnum):
+  INPUT_OK = 0
+  SPEED_MISSING = 1
+  YAW_RATE_MISSING = 2
+  SPEED_AND_YAW_RATE_MISSING = 3
+
+
+RMS_INVALID_CODE = 0x1F
+# Protocol RMS codes 0..30 select bin upper bounds (strictly ``value < bound``),
+# not exact standard deviations. Code 31 means invalid/unavailable.
+RMS_LINEAR_UPPER_BOUNDS = (
+  0.005, 0.006, 0.008, 0.011, 0.014, 0.018, 0.023, 0.029,
+  0.038, 0.049, 0.063, 0.081, 0.105, 0.135, 0.174, 0.224,
+  0.288, 0.371, 0.478, 0.616, 0.794, 1.023, 1.317, 1.697,
+  2.187, 2.817, 3.630, 4.676, 6.025, 7.762, 10.000,
+)
+RMS_ORIENTATION_UPPER_BOUNDS_DEG = (
+  0.005, 0.007, 0.010, 0.014, 0.020, 0.029, 0.041, 0.058,
+  0.082, 0.116, 0.165, 0.234, 0.332, 0.471, 0.669, 0.949,
+  1.346, 1.909, 2.709, 3.843, 5.451, 7.734, 10.971, 15.565,
+  22.081, 31.325, 44.439, 63.044, 89.437, 126.881, 180.000,
+)
 
 
 class RejectionReason(StrEnum):

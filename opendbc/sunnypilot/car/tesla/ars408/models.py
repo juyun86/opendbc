@@ -1,7 +1,13 @@
 import math
 from dataclasses import dataclass
 
-from opendbc.sunnypilot.car.tesla.ars408.constants import ARS408_MAX_OBJECTS
+from opendbc.sunnypilot.car.tesla.ars408.constants import (
+  ARS408_MAX_OBJECTS, MeasurementState, RMS_INVALID_CODE, RMS_LINEAR_UPPER_BOUNDS, RMS_ORIENTATION_UPPER_BOUNDS_DEG,
+)
+
+
+_VALID_MEASUREMENT_STATES = frozenset(state.value for state in MeasurementState)
+_PROTOCOL_FLOAT_EPSILON = 1e-9
 
 
 def _finite(*values: float) -> None:
@@ -12,6 +18,10 @@ def _finite(*values: float) -> None:
 def _raw_id(raw_id: int) -> None:
   if not 0 <= raw_id <= 255:
     raise ValueError(f"invalid ARS408 raw object ID: {raw_id}")
+
+
+def _in_protocol_range(value: float, lower: float, upper: float) -> bool:
+  return lower - _PROTOCOL_FLOAT_EPSILON <= value <= upper + _PROTOCOL_FLOAT_EPSILON
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,13 +65,40 @@ class ObjectQuality:
   raw_id: int
   probability: int
   measurement_state: int
+  dist_long_rms: int = RMS_INVALID_CODE
+  vrel_long_rms: int = RMS_INVALID_CODE
+  dist_lat_rms: int = RMS_INVALID_CODE
+  vrel_lat_rms: int = RMS_INVALID_CODE
+  arel_lat_rms: int = RMS_INVALID_CODE
+  arel_long_rms: int = RMS_INVALID_CODE
+  orientation_rms: int = RMS_INVALID_CODE
 
   def __post_init__(self) -> None:
     _raw_id(self.raw_id)
     if not 0 <= self.probability <= 7:
       raise ValueError(f"invalid ARS408 existence probability: {self.probability}")
-    if not 0 <= self.measurement_state <= 7:
+    if self.measurement_state not in _VALID_MEASUREMENT_STATES:
       raise ValueError(f"invalid ARS408 measurement state: {self.measurement_state}")
+    if not all(0 <= code <= RMS_INVALID_CODE for code in self.rms_codes):
+      raise ValueError(f"invalid ARS408 RMS code: {self.rms_codes}")
+
+  @property
+  def rms_codes(self) -> tuple[int, ...]:
+    return (
+      self.dist_long_rms, self.vrel_long_rms, self.dist_lat_rms, self.vrel_lat_rms,
+      self.arel_lat_rms, self.arel_long_rms, self.orientation_rms,
+    )
+
+  @property
+  def rms_upper_bounds(self) -> tuple[float | None, ...]:
+    linear = tuple(None if code == RMS_INVALID_CODE else RMS_LINEAR_UPPER_BOUNDS[code] for code in self.rms_codes[:-1])
+    orientation = None if self.orientation_rms == RMS_INVALID_CODE else RMS_ORIENTATION_UPPER_BOUNDS_DEG[self.orientation_rms]
+    return (*linear, orientation)
+
+  @property
+  def rms_sigmas(self) -> tuple[float | None, ...]:
+    """Compatibility alias; protocol values are bin upper bounds, not exact sigmas."""
+    return self.rms_upper_bounds
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,12 +106,26 @@ class ObjectExtended:
   raw_id: int
   a_rel: float
   object_class: int
+  a_rel_lat: float = 0.0
+  orientation_angle: float = 0.0
+  length: float = 0.0
+  width: float = 0.0
 
   def __post_init__(self) -> None:
     _raw_id(self.raw_id)
-    _finite(self.a_rel)
+    _finite(self.a_rel, self.a_rel_lat, self.orientation_angle, self.length, self.width)
     if not 0 <= self.object_class <= 7:
       raise ValueError(f"invalid ARS408 object class: {self.object_class}")
+    if not _in_protocol_range(self.a_rel, -10.0, 10.47):
+      raise ValueError(f"invalid ARS408 longitudinal acceleration: {self.a_rel}")
+    # The protocol's sensor-frame lateral range [-2.5, 2.61] is reflected into
+    # the openpilot frame, yielding [-2.61, 2.5].
+    if not _in_protocol_range(self.a_rel_lat, -2.61, 2.5):
+      raise ValueError(f"invalid ARS408 lateral acceleration: {self.a_rel_lat}")
+    if not _in_protocol_range(self.orientation_angle, -180.0, 180.0):
+      raise ValueError(f"invalid ARS408 orientation angle: {self.orientation_angle}")
+    if not 0.0 <= self.length <= 51.0 or not 0.0 <= self.width <= 51.0:
+      raise ValueError("invalid ARS408 object dimensions")
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +156,13 @@ class CycleResult:
   quality_count: int
   extended_count: int
   duplicate_ids: tuple[int, ...] = ()
+  measurement_mono_time_ns: int = 0
+  last_component_mono_time_ns: int = 0
+  assembly_close_mono_time_ns: int = 0
+  # Timestamp integrity gates the shadow perception path only. It is separate
+  # from protocol invalidity so malformed/missing host metadata cannot change
+  # the established standard RadarData object path.
+  timestamp_valid: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +271,12 @@ class DiagnosticsSnapshot:
   grace_held_tracks: int
   filter_header: FilterStateHeader | None
   filter_records: tuple[FilterStateRecord, ...]
+  # Strict source-timestamp state for the shadow perception publisher. The
+  # legacy fields above remain arrival-time based for standard RadarData.
+  trusted_errors: DiagnosticErrors
+  trusted_radar_state_ready: bool
+  trusted_radar_state_count: int
+  trusted_interference_count: int
 
 
 ParsedFrame = ObjectStatus | ObjectGeneral | ObjectQuality | ObjectExtended | RadarStateSnapshot | FilterStateHeader | FilterStateRecord

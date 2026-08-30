@@ -86,10 +86,21 @@ BO_ 1547 Obj_1_General: 8 Radar
 
 BO_ 1548 Obj_2_Quality: 7 Radar
  SG_ Obj_ID : 7|8@0+ (1,0) [0|255] "" Host
+ SG_ Obj_DistLong_rms : 15|5@0+ (1,0) [0|31] "" Host
+ SG_ Obj_VrelLong_rms : 21|5@0+ (1,0) [0|31] "" Host
+ SG_ Obj_DistLat_rms : 10|5@0+ (1,0) [0|31] "" Host
+ SG_ Obj_VrelLat_rms : 16|5@0+ (1,0) [0|31] "" Host
+ SG_ Obj_ArelLat_rms : 38|5@0+ (1,0) [0|31] "" Host
+ SG_ Obj_ArelLong_rms : 27|5@0+ (1,0) [0|31] "" Host
+ SG_ Obj_Orientation_rms : 33|5@0+ (1,0) [0|31] "" Host
  SG_ Obj_MeasState : 52|3@0+ (1,0) [0|7] "" Host
  SG_ Obj_ProbOfExist : 55|3@0+ (1,0) [0|7] "" Host
 
 BO_ 1549 Obj_3_Extended: 8 Radar
  SG_ Obj_ID : 7|8@0+ (1,0) [0|255] "" Host
  SG_ Obj_ArelLong : 15|11@0+ (0.01,-10) [-10|10.47] "m/s2" Host
+ SG_ Obj_ArelLat : 20|9@0+ (0.01,-2.5) [-2.5|2.61] "m/s2" Host
  SG_ Obj_Class : 26|3@0+ (1,0) [0|7] "" Host
+ SG_ Obj_OrientationAngle : 39|10@0+ (0.4,-180) [-180|229.2] "deg" Host
+ SG_ Obj_Length : 55|8@0+ (0.2,0) [0|51] "m" Host
+ SG_ Obj_Width : 63|8@0+ (0.2,0) [0|51] "m" Host
