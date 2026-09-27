@@ -3,19 +3,34 @@ import math
 from opendbc.can import CANPacker
 from opendbc.car import structs
 from opendbc.car.can_definitions import CanData
-from opendbc.sunnypilot.car.tesla.ars408.constants import ARS408_BUS, ARS408_DBC, FILTER_SIGNAL_SPECS
+from opendbc.sunnypilot.car.tesla.ars408.constants import ARS408_BUS, ARS408_DBC, ARS408_MOUNT_INVERTED, FILTER_SIGNAL_SPECS
 from opendbc.sunnypilot.car.tesla.values import TeslaFlagsSP
 
 
 MOTION_TX_INTERVAL_FRAMES = 5
 MAX_SPEED_MPS = 85.0
 MAX_ABS_YAW_RATE_DEG_S = 100.0
+MOTION_MAX_AGE_NS = 100_000_000
 
 
 class ARS408Transmitter:
-  def __init__(self, CP_SP: structs.CarParamsSP) -> None:
+  def __init__(self, CP_SP: structs.CarParamsSP, *, mount_inverted: bool = ARS408_MOUNT_INVERTED) -> None:
     self.enabled = bool(CP_SP.flags & TeslaFlagsSP.ARS408_RADAR)
+    self.yaw_sign = 1.0 if mount_inverted else -1.0
     self.packer = CANPacker(ARS408_DBC)
+    self.yaw_rate_rad_s: float | None = None
+    self.yaw_rate_timestamp_ns = 0
+
+  def update_yaw_rate(self, yaw_rate_rad_s: float | None, timestamp_ns: int) -> None:
+    # Calibrated deviceMotion input supplied by card; CarState.yawRate has no
+    # source on Tesla. None explicitly invalidates a previously good sample.
+    self.yaw_rate_rad_s = yaw_rate_rad_s
+    self.yaw_rate_timestamp_ns = timestamp_ns
+
+  def yaw_rate_valid(self, now_nanos: int) -> bool:
+    return (self.yaw_rate_rad_s is not None and math.isfinite(self.yaw_rate_rad_s) and
+            abs(math.degrees(self.yaw_rate_rad_s)) <= MAX_ABS_YAW_RATE_DEG_S and self.yaw_rate_timestamp_ns > 0 and
+            0 <= now_nanos - self.yaw_rate_timestamp_ns <= MOTION_MAX_AGE_NS)
 
   def encode_radar_configuration(self, field: str, value: int | bool) -> CanData:
     values: dict[str, int] = {}
@@ -78,8 +93,10 @@ class ARS408Transmitter:
       raise ValueError(f"ARS408 yaw rate is outside +/-{MAX_ABS_YAW_RATE_DEG_S} deg/s")
     return self.packer.make_can_msg("YawRateInformation", ARS408_BUS, {"RadarDevice_YawRate": yaw_rate_deg_s})
 
-  def update(self, frame: int, car_state: structs.CarState) -> list[CanData]:
+  def update(self, frame: int, car_state: structs.CarState, now_nanos: int) -> list[CanData]:
     if not self.enabled or frame < 0 or frame % MOTION_TX_INTERVAL_FRAMES or not car_state.canValid:
+      return []
+    if not self.yaw_rate_valid(now_nanos):
       return []
     speed_mps = abs(float(car_state.vEgoRaw))
     if car_state.standstill or speed_mps <= 0.01:
@@ -89,7 +106,10 @@ class ARS408Transmitter:
     else:
       direction = 1
     try:
-      return [self.encode_speed(speed_mps, direction), self.encode_yaw_rate(-math.degrees(float(car_state.yawRate)))]
+      # Calibrated frame is forward/right/down (right turn positive).
+      # Upright ARS408 requires left-positive degrees/s; inverted mounting
+      # reverses its vertical axis and therefore the input yaw sign as well.
+      return [self.encode_speed(speed_mps, direction), self.encode_yaw_rate(self.yaw_sign * math.degrees(self.yaw_rate_rad_s))]
     except ValueError:
       return []
 

@@ -27,6 +27,7 @@ MSG_EPAS3S_SYS_STATUS = 0x370
 MSG_ISA_CHIME_SUPPRESS = 0x399
 MSG_ARS408_SPEED = 0x300
 MSG_ARS408_YAW_RATE = 0x301
+MSG_GATEWAY_CONFIG = 0x6E0
 OBSERVED_SPEED_WHEEL_IDLE = bytes.fromhex("010000c000000000")
 OBSERVED_BODY_CONTROLS_IDLE = bytes.fromhex("008802000000b026")
 
@@ -47,6 +48,7 @@ class TestTeslaSafetyBase(common.CarSafetyTest, common.AngleSteeringSafetyTest, 
              [0x679, CANBUS.vehicle], [MSG_VCLEFT_SWITCH_STATUS, CANBUS.vehicle], [MSG_DAS_BODY_CONTROLS, CANBUS.vehicle],
              [MSG_UI_TRIP_PLANNING, 0], [MSG_UI_AUTOPILOT_CONTROL, 0],
              [MSG_EPAS3S_SYS_STATUS, 0], [MSG_ISA_CHIME_SUPPRESS, 0]]
+  TX_MSGS += [[MSG_GATEWAY_CONFIG, CANBUS.vehicle]]
 
   STANDSTILL_THRESHOLD = 0.1
   GAS_PRESSED_THRESHOLD = 3
@@ -889,6 +891,89 @@ class TestTeslaVehicleBusSafety(TestTeslaSafetyBase):
   def _lkas_button_msg(self, enabled):
     values = {"UI_activeTouchPoints": 3 if enabled else 0}
     return self.packer_adas.make_can_msg_safety("UI_status2", CANBUS.vehicle, values)
+
+  def _gateway_gear_msg(self, gear=1, counter=0):
+    return self.packer.make_can_msg_safety("DI_systemStatus", 0,
+                                           {"DI_systemStatusCounter": counter, "DI_gear": gear})
+
+  @staticmethod
+  def _gateway_config_msg(payload):
+    return libsafety_py.make_CANPacket(MSG_GATEWAY_CONFIG, CANBUS.vehicle, bytes(payload))
+
+  def _set_gateway_config_safe_state(self, now=100_000):
+    self.safety.set_timer(now)
+    self.safety.set_controls_allowed(False)
+    self.safety.set_controls_allowed_lateral(False)
+    self.assertTrue(self._rx(self._gateway_gear_msg()))
+    self.assertTrue(self._rx(self._speed_msg(0)))
+    self.assertTrue(self._rx(self._vehicle_moving_msg(0)))
+
+  def test_gateway_config_payloads_parked_only(self):
+    valid = [
+      [0x01, 1, 0, 0, 0, 0, 0, 0],
+      [0x02, 2, 47, 0, 0, 0, 0, 0],
+      [0x03, 3, 0, 0, 0, 0, 0, 0],
+      [0x10, 4, 48, 0, 1, 2, 3, 4],
+      [0x11, 5, 47, 4, 0xFF, 0x07, 0xFF, 1],
+      [0x12, 6, 0, 0, 1, 2, 3, 4],
+      [0x13, 7, 0, 0, 0, 0, 0, 0],
+    ]
+    self._set_gateway_config_safe_state()
+    for index, payload in enumerate(valid):
+      self.safety.set_timer(100_000 + index * 25_000)
+      self.assertTrue(self._tx(self._gateway_config_msg(payload)), payload)
+
+  def test_gateway_config_rejects_malformed_payloads(self):
+    invalid = [
+      [0x00, 1, 0, 0, 0, 0, 0, 0],
+      [0x01, 1, 0, 0, 0, 0, 0, 1],
+      [0x02, 1, 48, 0, 0, 0, 0, 0],
+      [0x03, 1, 1, 0, 0, 0, 0, 0],
+      [0x10, 1, 49, 0, 0, 0, 0, 0],
+      [0x10, 1, 1, 1, 0, 0, 0, 0],
+      [0x11, 1, 48, 2, 1, 0, 8, 1],
+      [0x11, 1, 0, 1, 1, 0, 8, 1],
+      [0x11, 1, 0, 2, 0x00, 0x08, 8, 1],
+      [0x11, 1, 0, 2, 0xE0, 0x06, 8, 1],
+      [0x11, 1, 0, 2, 1, 0, 9, 1],
+      [0x11, 1, 0, 2, 1, 0, 8, 2],
+      [0x12, 1, 1, 0, 0, 0, 0, 0],
+      [0x13, 1, 0, 0, 0, 0, 0, 1],
+    ]
+    for index, payload in enumerate(invalid):
+      self._set_gateway_config_safe_state(100_000 + index * 50_000)
+      self.assertFalse(self._tx(self._gateway_config_msg(payload)), payload)
+
+  def test_gateway_config_requires_fresh_parked_disabled_state(self):
+    msg = self._gateway_config_msg([0x01, 1, 0, 0, 0, 0, 0, 0])
+    self.assertFalse(self._tx(msg))
+
+    self._set_gateway_config_safe_state(100_000)
+    self.assertTrue(self._tx(msg))
+    self.assertFalse(self._tx(msg))  # Rate limit.
+    self.safety.set_timer(125_000)
+    self.assertTrue(self._tx(msg))
+
+    self._set_gateway_config_safe_state(200_000)
+    self.safety.set_controls_allowed(True)
+    self.assertFalse(self._tx(msg))
+    self._set_gateway_config_safe_state(250_000)
+    self.safety.set_controls_allowed_lateral(True)
+    self.assertFalse(self._tx(msg))
+
+    self._set_gateway_config_safe_state(300_000)
+    self.assertTrue(self._rx(self._gateway_gear_msg(gear=4, counter=1)))
+    self.assertFalse(self._tx(msg))
+    self._set_gateway_config_safe_state(350_000)
+    self.assertTrue(self._rx(self._speed_msg(1)))
+    self.assertFalse(self._tx(msg))
+    self._set_gateway_config_safe_state(400_000)
+    self.assertTrue(self._rx(self._vehicle_moving_msg(1)))
+    self.assertFalse(self._tx(msg))
+
+    self._set_gateway_config_safe_state(500_000)
+    self.safety.set_timer(1_000_001)
+    self.assertFalse(self._tx(msg))
 
   def _set_mads_screen_button_config(self, finger_flag):
     param_sp = TeslaSafetyFlagsSP.HAS_VEHICLE_BUS

@@ -113,14 +113,27 @@ def test_range_and_class_constraints_are_applied() -> None:
   assert sorted(track.track_id for track in different_class.tracks) == [1, 2]
 
 
-def test_invalid_cycle_holds_tracks_without_aging() -> None:
+def test_invalid_cycles_expire_tracks_and_do_not_refresh_from_untrusted_objects() -> None:
   tracker = ARS408Tracker()
   tracker.update(cycle(obj(1)))
-  for _ in range(5):
-    result = tracker.update(cycle(invalid=True))
+  for _ in range(2):
+    result = tracker.update(cycle(obj(1, d_rel=99.0), obj(2), invalid=True))
     assert len(result.tracks) == 1 and not result.tracks[0].measured
+    assert result.tracks[0].d_rel == 30.0
+  expired = tracker.update(cycle(invalid=True))
+  assert expired.tracks == ()
+  assert expired.rejection_reasons == ((1, "timeout"),)
   recovered = tracker.update(cycle(obj(1)))
-  assert recovered.tracks[0].track_id == 1
+  assert recovered.tracks[0].track_id == 256 and recovered.tracks[0].measured
+
+
+def test_valid_cycle_recovers_within_invalid_cycle_grace() -> None:
+  tracker = ARS408Tracker()
+  tracker.update(cycle(obj(1)))
+  tracker.update(cycle(invalid=True))
+  recovered = tracker.update(cycle(obj(1, d_rel=31.0)))
+  assert recovered.tracks[0].track_id == 1 and recovered.tracks[0].measured
+  assert recovered.tracks[0].d_rel == 31.0
 
 
 def test_partial_cycle_ages_only_missing_tracks() -> None:

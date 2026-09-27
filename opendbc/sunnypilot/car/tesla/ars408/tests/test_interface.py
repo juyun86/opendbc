@@ -6,7 +6,7 @@ import pytest
 from opendbc.car import structs
 from opendbc.sunnypilot.car.tesla.ars408.interface import ARS408RadarInterface
 from opendbc.sunnypilot.car.tesla.ars408.models import (
-  ObjectGeneral, ObjectQuality, ObjectStatus, ParsedFrame, RadarStateSnapshot,
+  ObjectGeneral, ObjectQuality, ObjectStatus, ParsedFrame, RadarStateSnapshot, SoftwareVersion,
 )
 
 
@@ -74,3 +74,22 @@ def test_radar_state_faults_map_to_standard_errors() -> None:
   radar = interface(frames)
   result = radar.update(packets(len(frames)))
   assert result is not None and result.errors.radarFault
+
+
+@pytest.mark.parametrize("invalid_status", [ObjectStatus(0, 1, 2), ObjectStatus(101, 1, 1)])
+def test_invalid_object_protocol_publishes_error_and_recovers(invalid_status: ObjectStatus) -> None:
+  radar = interface([radar_state(), invalid_status, ObjectStatus(0, 2, 1), ObjectStatus(0, 3, 1)])
+  result = radar.update(packets(3))
+  assert result is not None and result.errors.wrongConfig and not result.points
+  recovered = radar.update(packets(1))
+  assert recovered is not None and not recovered.errors.wrongConfig
+
+
+def test_version_is_diagnostic_only_and_does_not_close_object_cycle() -> None:
+  version = SoftwareVersion(4, 34, 1, False, 0)
+  frames = [radar_state(), ObjectStatus(0, 1, 1), version, ObjectStatus(0, 2, 1)]
+  radar = interface(frames)
+  result = radar.update(packets(len(frames)))
+  assert result is not None and not result.errors.wrongConfig
+  snapshot = radar.diagnostics.snapshot(0, parser_valid=True)
+  assert snapshot.software_version == version and snapshot.exact_cycles == 1

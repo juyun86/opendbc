@@ -290,7 +290,10 @@ class CoopSteeringCarController:
 
     angle_override_target, override_torque = self.compute_override_targets(CS.out.vEgo, CS.out.steeringTorque, VM)
     slew_step = self.override_slew_step(angle_override_target, override_torque)
-    slew_step = self.adjust_slew_for_planner(slew_step, apply_angle_step, override_torque)
+    # With no driver torque above the deadzone, this slew only releases the
+    # stored override. Planner motion must not cancel that return to zero.
+    if abs(CS.out.steeringTorque) > STEER_OVERRIDE_MIN_TORQUE:
+      slew_step = self.adjust_slew_for_planner(slew_step, apply_angle_step, override_torque)
     self.angle_override += slew_step
 
     apply_angle += self.angle_override

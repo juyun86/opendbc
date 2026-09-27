@@ -55,6 +55,15 @@ class ObjectQuality:
   raw_id: int
   probability: int
   measurement_state: int
+  # Raw lookup-table indices, not standard deviations in physical units.
+  # None means unavailable; index 31 is the sensor's invalid code.
+  dist_long_rms: int | None = None
+  dist_lat_rms: int | None = None
+  vrel_long_rms: int | None = None
+  vrel_lat_rms: int | None = None
+  arel_long_rms: int | None = None
+  arel_lat_rms: int | None = None
+  orientation_rms: int | None = None
 
   def __post_init__(self) -> None:
     _raw_id(self.raw_id)
@@ -62,6 +71,10 @@ class ObjectQuality:
       raise ValueError(f"invalid ARS408 existence probability: {self.probability}")
     if not 0 <= self.measurement_state <= 7:
       raise ValueError(f"invalid ARS408 measurement state: {self.measurement_state}")
+    for value in (self.dist_long_rms, self.dist_lat_rms, self.vrel_long_rms, self.vrel_lat_rms,
+                  self.arel_long_rms, self.arel_lat_rms, self.orientation_rms):
+      if value is not None and not 0 <= value <= 31:
+        raise ValueError(f"invalid ARS408 RMS index: {value}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,10 +82,17 @@ class ObjectExtended:
   raw_id: int
   a_rel: float
   object_class: int
+  # Preserve sensor coordinates for diagnostics; these do not steer or filter tracks.
+  sensor_a_rel_lat: float | None = None
+  sensor_orientation_deg: float | None = None
+  length_m: float | None = None
+  width_m: float | None = None
 
   def __post_init__(self) -> None:
     _raw_id(self.raw_id)
     _finite(self.a_rel)
+    _finite(*(value for value in (self.sensor_a_rel_lat, self.sensor_orientation_deg, self.length_m, self.width_m)
+              if value is not None))
     if not 0 <= self.object_class <= 7:
       raise ValueError(f"invalid ARS408 object class: {self.object_class}")
 
@@ -139,6 +159,15 @@ class RadarStateSnapshot:
       raise ValueError("invalid ARS408 NVM status")
     if not 0 <= self.sort_index <= 2 or not 0 <= self.rcs_threshold <= 7:
       raise ValueError("invalid ARS408 sort index or RCS threshold")
+
+
+@dataclass(frozen=True, slots=True)
+class SoftwareVersion:
+  major: int
+  minor: int
+  patch: int
+  extended_range: bool
+  country_code: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +242,7 @@ class DiagnosticsSnapshot:
   grace_held_tracks: int
   filter_header: FilterStateHeader | None
   filter_records: tuple[FilterStateRecord, ...]
+  software_version: SoftwareVersion | None = None
 
 
-ParsedFrame = ObjectStatus | ObjectGeneral | ObjectQuality | ObjectExtended | RadarStateSnapshot | FilterStateHeader | FilterStateRecord
+ParsedFrame = ObjectStatus | ObjectGeneral | ObjectQuality | ObjectExtended | RadarStateSnapshot | FilterStateHeader | FilterStateRecord | SoftwareVersion

@@ -83,12 +83,8 @@ class ARS408Tracker:
     self.duplicate_suppression_count = 0
 
   def update(self, cycle: CycleResult, *, max_distance_m: float = ARS408_MAX_DISTANCE_M) -> TrackerResult:
-    if cycle.invalid:
-      for track in self._tracks.values():
-        track.measured = False
-      return self._result((), {})
-
-    objects = {obj.raw_id: obj for obj in cycle.objects}
+    # Invalid protocol data cannot refresh a track or suspend its expiry.
+    objects = {} if cycle.invalid else {obj.raw_id: obj for obj in cycle.objects}
     self._explicit_merge_handover(objects)
     self._kinematic_handover(objects)
 

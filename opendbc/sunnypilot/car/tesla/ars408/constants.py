@@ -7,6 +7,10 @@ ARS408_BUS = 1
 ARS408_SENSOR_ID = 0
 ARS408_MAX_DISTANCE_M = 250.0
 ARS408_MAX_OBJECTS = 100
+# User-confirmed 2026-09-24: lettering upside down. Roll is 180 degrees
+# relative to the manufacturer's upright, forward-facing installation.
+# Change this shared setting only after the physical installation is restored.
+ARS408_MOUNT_INVERTED = True
 
 ARS408_RADAR_CONFIG = 0x200
 ARS408_RADAR_STATE = 0x201
@@ -19,6 +23,7 @@ ARS408_STATUS = 0x60A
 ARS408_GENERAL = 0x60B
 ARS408_QUALITY = 0x60C
 ARS408_EXTENDED = 0x60D
+ARS408_VERSION = 0x700
 
 ARS408_RX_DLC: dict[int, int] = {
   ARS408_RADAR_STATE: 8,
@@ -28,6 +33,7 @@ ARS408_RX_DLC: dict[int, int] = {
   ARS408_GENERAL: 8,
   ARS408_QUALITY: 7,
   ARS408_EXTENDED: 8,
+  ARS408_VERSION: 4,
 }
 
 

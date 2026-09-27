@@ -48,7 +48,7 @@ class CarController(CarControllerBase):
   def update(self, CC, CC_SP, CS, now_nanos):
     actuators = CC.actuators
     can_sends = []
-    can_sends.extend(self.ars408_transmitter.update(self.frame, CS.out))
+    can_sends.extend(self.ars408_transmitter.update(self.frame, CS.out, now_nanos))
     speed_limit_sends = self.speed_limit_controller.update(CC, CS, now_nanos)
     can_sends.extend(speed_limit_sends)
     if speed_limit_sends:

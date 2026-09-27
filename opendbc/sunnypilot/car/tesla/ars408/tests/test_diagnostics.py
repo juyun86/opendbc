@@ -94,3 +94,24 @@ def test_filter_and_cycle_state_is_internal_and_bounded() -> None:
   assert (result.exact_cycles, result.partial_cycles, result.invalid_cycles) == (1, 1, 1)
   assert diagnostics.rejection_counts == {"duplicate": 1}
   assert (diagnostics.handover_count, diagnostics.duplicate_suppression_count) == (2, 3)
+
+
+def test_invalid_protocol_is_not_reported_as_healthy_empty_space() -> None:
+  diagnostics = ARS408Diagnostics(0)
+  diagnostics.observe_radar_state(radar_state(), 0)
+  diagnostics.observe_status(ObjectStatus(0, 1, 2), 0)
+  diagnostics.observe_cycle(empty_cycle(invalid=True), tracker_result())
+  assert diagnostics.snapshot(0, parser_valid=True).errors.wrong_config
+  diagnostics.observe_cycle(empty_cycle(), tracker_result())
+  assert not diagnostics.snapshot(0, parser_valid=True).errors.wrong_config
+
+
+def test_missing_motion_feedback_is_temporary_and_recovers() -> None:
+  diagnostics = ARS408Diagnostics(0)
+  for state in (1, 2, 3):
+    diagnostics.observe_radar_state(radar_state(motion_rx_state=state), state)
+    errors = diagnostics.snapshot(state, parser_valid=True).errors
+    assert errors.radar_unavailable_temporary
+    assert not errors.radar_fault and not errors.wrong_config
+  diagnostics.observe_radar_state(radar_state(), 4)
+  assert not diagnostics.snapshot(4, parser_valid=True).errors.radar_unavailable_temporary

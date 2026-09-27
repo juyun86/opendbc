@@ -22,6 +22,10 @@
 #define TESLA_STEERING_DISENGAGE_TORQUE 500 // cNm
 #define TESLA_TURN_SIGNAL_SESSION_TIMEOUT_US 60000000U
 #define TESLA_TURN_SIGNAL_SESSION_MAX_FRAMES 1200U
+#define TESLA_GATEWAY_CONFIG_ADDR 0x6E0U
+#define TESLA_GATEWAY_CONFIG_RESPONSE_ADDR 0x6E1U
+#define TESLA_GATEWAY_CONFIG_MIN_INTERVAL_US 25000U
+#define TESLA_GATEWAY_CONFIG_STATE_TIMEOUT_US 500000U
 
 static bool tesla_longitudinal = false;
 static bool tesla_fsd_14 = false;
@@ -84,6 +88,35 @@ static uint32_t tesla_ambient_speed_ts = 0U;
 static uint32_t tesla_ambient_tx_ts = 0U;
 static uint32_t tesla_ambient_session_ts = 0U;
 static uint8_t tesla_ambient_session_count = 0U;
+static bool tesla_gateway_config_tx_valid = false;
+static uint32_t tesla_gateway_config_tx_ts = 0U;
+
+static bool tesla_gateway_config_payload_valid(const CANPacket_t *msg) {
+  const uint8_t command = msg->data[0];
+  if ((command == 0x01U) || (command == 0x03U) || (command == 0x13U)) {
+    for (uint8_t i = 2U; i < 8U; i++) if (msg->data[i] != 0U) return false;
+    return true;
+  }
+  if (command == 0x02U) {
+    if (msg->data[2] >= 48U) return false;
+    for (uint8_t i = 3U; i < 8U; i++) if (msg->data[i] != 0U) return false;
+    return true;
+  }
+  if (command == 0x10U) {
+    return (msg->data[2] <= 48U) && (msg->data[3] == 0U);
+  }
+  if (command == 0x11U) {
+    const uint16_t identifier = (uint16_t)msg->data[4] | ((uint16_t)msg->data[5] << 8U);
+    return (msg->data[2] < 48U) && (msg->data[3] >= 2U) && (msg->data[3] <= 4U) &&
+           (identifier <= 0x7FFU) && (identifier != TESLA_GATEWAY_CONFIG_ADDR) &&
+           (identifier != TESLA_GATEWAY_CONFIG_RESPONSE_ADDR) &&
+           ((msg->data[6] <= 8U) || (msg->data[6] == 0xFFU)) && (msg->data[7] <= 1U);
+  }
+  if (command == 0x12U) {
+    return (msg->data[2] == 0U) && (msg->data[3] == 0U);
+  }
+  return false;
+}
 
 static uint8_t tesla_get_counter(const CANPacket_t *msg) {
 
@@ -357,6 +390,22 @@ static bool tesla_tx_hook(const CANPacket_t *msg) {
   bool violation = false;
   bool longitudinal_takeover = false;
   bool lateral_takeover = false;
+
+  if (msg->addr == TESLA_GATEWAY_CONFIG_ADDR) {
+    const uint32_t now = microsecond_timer_get();
+    const bool state_fresh = (safety_get_ts_elapsed(now, tesla_ambient_gear_ts) <= TESLA_GATEWAY_CONFIG_STATE_TIMEOUT_US) &&
+                             (safety_get_ts_elapsed(now, tesla_ambient_speed_ts) <= TESLA_GATEWAY_CONFIG_STATE_TIMEOUT_US);
+    const bool rate_allowed = !tesla_gateway_config_tx_valid ||
+                              (safety_get_ts_elapsed(now, tesla_gateway_config_tx_ts) >= TESLA_GATEWAY_CONFIG_MIN_INTERVAL_US);
+    const bool safe_state = tesla_has_vehicle_bus && tesla_ambient_park && tesla_ambient_stopped &&
+                            !vehicle_moving && !controls_allowed && !controls_allowed_lateral;
+    if (!state_fresh || !rate_allowed || !safe_state || !tesla_gateway_config_payload_valid(msg)) {
+      violation = true;
+    } else {
+      tesla_gateway_config_tx_valid = true;
+      tesla_gateway_config_tx_ts = now;
+    }
+  }
 
   // Don't send any messages when Autopark is active
   if (tesla_summon) {
@@ -656,6 +705,7 @@ static safety_config tesla_init(uint16_t param) {
     {0x3E9, 1, 8, .check_relay = false, .disable_static_blocking = true},  // DAS_bodyControls (validation only)
     {0x3C2, 1, 8, .check_relay = false, .disable_static_blocking = true},  // VCLEFT_switchStatus (validation only)
     {0x679, 1, 7, .check_relay = false, .disable_static_blocking = true}, // Fixed red ambient test, parked only
+    {TESLA_GATEWAY_CONFIG_ADDR, 1, 8, .check_relay = false, .disable_static_blocking = true},
   };
 
   static const CanMsg TESLA_M3_Y_LONG_TX_MSGS[] = {
@@ -669,6 +719,7 @@ static safety_config tesla_init(uint16_t param) {
     {0x3E9, 1, 8, .check_relay = false, .disable_static_blocking = true}, // DAS_bodyControls (validation only)
     {0x3C2, 1, 8, .check_relay = false, .disable_static_blocking = true}, // VCLEFT_switchStatus (validation only)
     {0x679, 1, 7, .check_relay = false, .disable_static_blocking = true}, // Fixed red ambient test, parked only
+    {TESLA_GATEWAY_CONFIG_ADDR, 1, 8, .check_relay = false, .disable_static_blocking = true},
   };
 
   static const CanMsg TESLA_M3_Y_ARS408_TX_MSGS[] = {
@@ -682,6 +733,7 @@ static safety_config tesla_init(uint16_t param) {
     {0x3E9, 1, 8, .check_relay = false, .disable_static_blocking = true},
     {0x3C2, 1, 8, .check_relay = false, .disable_static_blocking = true},
     {0x679, 1, 7, .check_relay = false, .disable_static_blocking = true}, // Fixed red ambient test, parked only
+    {TESLA_GATEWAY_CONFIG_ADDR, 1, 8, .check_relay = false, .disable_static_blocking = true},
     {0x300, 1, 2, .check_relay = false, .disable_static_blocking = true},
     {0x301, 1, 2, .check_relay = false, .disable_static_blocking = true},
   };
@@ -697,6 +749,7 @@ static safety_config tesla_init(uint16_t param) {
     {0x3E9, 1, 8, .check_relay = false, .disable_static_blocking = true},
     {0x3C2, 1, 8, .check_relay = false, .disable_static_blocking = true},
     {0x679, 1, 7, .check_relay = false, .disable_static_blocking = true}, // Fixed red ambient test, parked only
+    {TESLA_GATEWAY_CONFIG_ADDR, 1, 8, .check_relay = false, .disable_static_blocking = true},
     {0x300, 1, 2, .check_relay = false, .disable_static_blocking = true},
     {0x301, 1, 2, .check_relay = false, .disable_static_blocking = true},
   };
@@ -748,6 +801,8 @@ static safety_config tesla_init(uint16_t param) {
   tesla_ambient_tx_ts = 0U;
   tesla_ambient_session_ts = 0U;
   tesla_ambient_session_count = 0U;
+  tesla_gateway_config_tx_valid = false;
+  tesla_gateway_config_tx_ts = 0U;
   tesla_stock_aeb = false;
   tesla_stock_steering_control = false;
   tesla_stock_steering_control_prev = false;

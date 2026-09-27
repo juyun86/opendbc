@@ -9,7 +9,7 @@ from opendbc.sunnypilot.car.tesla.ars408.cycle import ARS408CycleAssembler
 from opendbc.sunnypilot.car.tesla.ars408.diagnostics import ARS408Diagnostics
 from opendbc.sunnypilot.car.tesla.ars408.models import (
   DiagnosticErrors, FilterStateHeader, FilterStateRecord, ObjectExtended, ObjectGeneral, ObjectQuality, ObjectStatus,
-  RadarStateSnapshot, TrackerResult,
+  RadarStateSnapshot, SoftwareVersion, TrackerResult,
 )
 from opendbc.sunnypilot.car.tesla.ars408.parser import ARS408Parser
 from opendbc.sunnypilot.car.tesla.ars408.tracker import ARS408Tracker
@@ -20,7 +20,7 @@ class ARS408RadarInterface(RadarInterfaceBase):
                clock: Callable[[], int] = time.monotonic_ns) -> None:
     super().__init__(CP, CP_SP)
     self._clock = clock
-    self.parser = ARS408Parser()
+    self.parser = ARS408Parser(diagnostic_fields=False)
     self.rcp = self.parser.can_parser
     self.assembler = ARS408CycleAssembler()
     self.tracker = ARS408Tracker()
@@ -41,6 +41,9 @@ class ARS408RadarInterface(RadarInterfaceBase):
           continue
         if isinstance(parsed, RadarStateSnapshot):
           self.diagnostics.observe_radar_state(parsed, now_ns)
+          continue
+        if isinstance(parsed, SoftwareVersion):
+          self.diagnostics.observe_software_version(parsed)
           continue
         if isinstance(parsed, FilterStateHeader):
           self.diagnostics.observe_filter_header(parsed)

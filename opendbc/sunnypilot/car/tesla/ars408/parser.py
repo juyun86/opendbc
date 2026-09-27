@@ -4,11 +4,11 @@ from opendbc.can import CANParser
 from opendbc.car.can_definitions import CanData
 from opendbc.sunnypilot.car.tesla.ars408.constants import (
   ARS408_BUS, ARS408_DBC, ARS408_EXTENDED, ARS408_FILTER_STATE_CONFIG, ARS408_FILTER_STATE_HEADER,
-  ARS408_GENERAL, ARS408_QUALITY, ARS408_RADAR_STATE, ARS408_RX_DLC, ARS408_STATUS, FILTER_SIGNAL_SPECS,
+  ARS408_GENERAL, ARS408_MOUNT_INVERTED, ARS408_QUALITY, ARS408_RADAR_STATE, ARS408_RX_DLC, ARS408_STATUS, ARS408_VERSION, FILTER_SIGNAL_SPECS,
 )
 from opendbc.sunnypilot.car.tesla.ars408.models import (
   FilterStateHeader, FilterStateRecord, ObjectExtended, ObjectGeneral, ObjectQuality, ObjectStatus, ParsedFrame,
-  RadarStateSnapshot,
+  RadarStateSnapshot, SoftwareVersion,
 )
 
 
@@ -20,12 +20,29 @@ MESSAGE_NAMES: dict[int, str] = {
   ARS408_GENERAL: "Obj_1_General",
   ARS408_QUALITY: "Obj_2_Quality",
   ARS408_EXTENDED: "Obj_3_Extended",
+  ARS408_VERSION: "VersionID",
 }
 
 
 class ARS408Parser:
-  def __init__(self) -> None:
+  def __init__(self, *, mount_inverted: bool = ARS408_MOUNT_INVERTED, diagnostic_fields: bool = True) -> None:
+    # RadarPoint yRel/yvRel are left-positive, unlike the model's right-positive y.
+    self.lateral_sign = -1.0 if mount_inverted else 1.0
+    self.diagnostic_fields = diagnostic_fields
     self.can_parser = CANParser(ARS408_DBC, [(name, math.nan) for name in MESSAGE_NAMES.values()], ARS408_BUS)
+    if not diagnostic_fields:
+      # Restrict only this parser's message states; the shared DBC stays complete
+      # for offline diagnostics. These metadata fields are not used by tracking.
+      for address, required in (
+        (ARS408_QUALITY, {"Obj_ID", "Obj_ProbOfExist", "Obj_MeasState"}),
+        (ARS408_EXTENDED, {"Obj_ID", "Obj_ArelLong", "Obj_Class"}),
+      ):
+        state = self.can_parser.message_states[address]
+        state.signals = [signal for signal in state.signals if signal.name in required]
+        for values in (self.can_parser.vl[address], self.can_parser.ts_nanos[address]):
+          for name in list(values):
+            if name not in required:
+              del values[name]
     self.rejected_frames = 0
 
   @property
@@ -45,14 +62,33 @@ class ARS408Parser:
       return ObjectStatus(int(values["Obj_NofObjects"]), int(values["Obj_MeasCounter"]), int(values["Obj_InterfaceVersion"]))
     if address == ARS408_GENERAL:
       return ObjectGeneral(
-        raw_id=int(values["Obj_ID"]), d_rel=float(values["Obj_DistLong"]), y_rel=-float(values["Obj_DistLat"]),
-        v_rel=float(values["Obj_VrelLong"]), yv_rel=float(values["Obj_VrelLat"]), rcs=float(values["Obj_RCS"]),
+        raw_id=int(values["Obj_ID"]), d_rel=float(values["Obj_DistLong"]), y_rel=self.lateral_sign * float(values["Obj_DistLat"]),
+        v_rel=float(values["Obj_VrelLong"]), yv_rel=self.lateral_sign * float(values["Obj_VrelLat"]), rcs=float(values["Obj_RCS"]),
         dynamic_property=int(values["Obj_DynProp"]),
       )
     if address == ARS408_QUALITY:
-      return ObjectQuality(int(values["Obj_ID"]), int(values["Obj_ProbOfExist"]), int(values["Obj_MeasState"]))
+      if not self.diagnostic_fields:
+        return ObjectQuality(int(values["Obj_ID"]), int(values["Obj_ProbOfExist"]), int(values["Obj_MeasState"]))
+      return ObjectQuality(
+        int(values["Obj_ID"]), int(values["Obj_ProbOfExist"]), int(values["Obj_MeasState"]),
+        dist_long_rms=int(values["Obj_DistLong_rms"]), dist_lat_rms=int(values["Obj_DistLat_rms"]),
+        vrel_long_rms=int(values["Obj_VrelLong_rms"]), vrel_lat_rms=int(values["Obj_VrelLat_rms"]),
+        arel_long_rms=int(values["Obj_ArelLong_rms"]), arel_lat_rms=int(values["Obj_ArelLat_rms"]),
+        orientation_rms=int(values["Obj_Orientation_rms"]),
+      )
     if address == ARS408_EXTENDED:
-      return ObjectExtended(int(values["Obj_ID"]), float(values["Obj_ArelLong"]), int(values["Obj_Class"]))
+      if not self.diagnostic_fields:
+        return ObjectExtended(int(values["Obj_ID"]), float(values["Obj_ArelLong"]), int(values["Obj_Class"]))
+      return ObjectExtended(
+        int(values["Obj_ID"]), float(values["Obj_ArelLong"]), int(values["Obj_Class"]),
+        sensor_a_rel_lat=float(values["Obj_ArelLat"]), sensor_orientation_deg=float(values["Obj_OrientationAngle"]),
+        length_m=float(values["Obj_Length"]), width_m=float(values["Obj_Width"]),
+      )
+    if address == ARS408_VERSION:
+      return SoftwareVersion(
+        int(values["Version_MajorRelease"]), int(values["Version_MinorRelease"]), int(values["Version_PatchLevel"]),
+        bool(values["Version_ExtendedRange"]), int(values["Version_CountryCode"]),
+      )
     if address == ARS408_RADAR_STATE:
       return RadarStateSnapshot(
         interference=bool(values["RadarState_Interference"]), voltage_error=bool(values["RadarState_Voltage_Error"]),
@@ -75,8 +111,10 @@ class ARS408Parser:
     if filter_type != 1 or index not in FILTER_SIGNAL_SPECS:
       return None
     spec = FILTER_SIGNAL_SPECS[index]
-    raw_min = ((data[1] << 8) | data[2]) >> (16 - spec.bits)
-    raw_max = ((data[3] << 8) | data[4]) >> (16 - spec.bits)
+    # The 12/13-bit fields are right-aligned; the upper bits are reserved.
+    mask = (1 << spec.bits) - 1
+    raw_min = ((data[1] << 8) | data[2]) & mask
+    raw_max = ((data[3] << 8) | data[4]) & mask
     minimum = raw_min * spec.resolution + spec.offset
     maximum = raw_max * spec.resolution + spec.offset
     if index == 0:

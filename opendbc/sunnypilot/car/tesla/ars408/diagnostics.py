@@ -4,7 +4,7 @@ from opendbc.car.carlog import carlog
 from opendbc.sunnypilot.car.tesla.ars408.constants import ARS408_MAX_DISTANCE_M, ARS408_SENSOR_ID
 from opendbc.sunnypilot.car.tesla.ars408.models import (
   CycleResult, DiagnosticErrors, DiagnosticsSnapshot, FilterStateHeader, FilterStateRecord, ObjectStatus,
-  RadarStateSnapshot, TrackerResult,
+  RadarStateSnapshot, SoftwareVersion, TrackerResult,
 )
 
 
@@ -23,11 +23,13 @@ class ARS408Diagnostics:
     self.last_status_ns: int | None = None
     self.last_radar_state_ns: int | None = None
     self.radar_state: RadarStateSnapshot | None = None
+    self.software_version: SoftwareVersion | None = None
     self.radar_state_count = 0
     self.interference_count = 0
     self.exact_cycles = 0
     self.partial_cycles = 0
     self.invalid_cycles = 0
+    self.protocol_invalid = False
     self.raw_object_count = 0
     self.class_counts: dict[int, int] = {}
     self.probability_counts: dict[int, int] = {}
@@ -63,6 +65,11 @@ class ARS408Diagnostics:
   def observe_filter_header(self, header: FilterStateHeader) -> None:
     self.filter_header = header
 
+  def observe_software_version(self, version: SoftwareVersion) -> None:
+    if version != self.software_version:
+      self._safe_log("debug", {"event": "ars408SoftwareVersion", "version": version})
+    self.software_version = version
+
   def observe_filter_record(self, record: FilterStateRecord) -> None:
     previous = self.filter_records.get(record.index)
     self.filter_records[record.index] = record
@@ -70,6 +77,7 @@ class ARS408Diagnostics:
       self._safe_log("debug", {"event": "ars408FilterState", "record": record})
 
   def observe_cycle(self, cycle: CycleResult, tracker: TrackerResult) -> None:
+    self.protocol_invalid = cycle.invalid
     if cycle.invalid:
       self.invalid_cycles += 1
     elif cycle.exact:
@@ -103,9 +111,10 @@ class ARS408Diagnostics:
 
     hard_fault = bool(state and (state.voltage_error or state.persistent_error))
     temporary_fault = bool(state and (
-      state.temperature_error or state.temporary_error or self.interference_count >= INTERFERENCE_CONFIRM_REPORTS
+      state.temperature_error or state.temporary_error or state.motion_rx_state != 0 or
+      self.interference_count >= INTERFERENCE_CONFIRM_REPORTS
     ))
-    wrong_config = bool(state and self.radar_state_count >= CONFIG_GRACE_REPORTS and (
+    wrong_config = self.protocol_invalid or bool(state and self.radar_state_count >= CONFIG_GRACE_REPORTS and (
       state.sensor_id != ARS408_SENSOR_ID or state.output_type != 1 or not state.quality_enabled or
       state.max_distance_m != int(ARS408_MAX_DISTANCE_M)
     ))
@@ -123,6 +132,7 @@ class ARS408Diagnostics:
       grace_held_tracks=self.grace_held_tracks,
       filter_header=self.filter_header,
       filter_records=tuple(self.filter_records[index] for index in sorted(self.filter_records)),
+      software_version=self.software_version,
     )
 
   @staticmethod
