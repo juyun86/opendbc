@@ -99,7 +99,11 @@ class ARS408Transmitter:
     if not self.yaw_rate_valid(now_nanos):
       return []
     speed_mps = abs(float(car_state.vEgoRaw))
+    if not math.isfinite(speed_mps) or speed_mps > MAX_SPEED_MPS:
+      return []
     if car_state.standstill or speed_mps <= 0.01:
+      # The stationary direction requires zero speed, including residual wheel speed.
+      speed_mps = 0.0
       direction = 0
     elif car_state.gearShifter == structs.CarState.GearShifter.reverse:
       direction = 2

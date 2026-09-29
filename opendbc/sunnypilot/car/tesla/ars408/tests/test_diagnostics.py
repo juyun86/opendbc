@@ -1,6 +1,6 @@
 from opendbc.sunnypilot.car.tesla.ars408.diagnostics import (
   ARS408Diagnostics, CONFIG_GRACE_REPORTS, INTERFERENCE_CONFIRM_REPORTS, RADAR_STATE_TIMEOUT_NS,
-  STARTUP_GRACE_NS, STATUS_TIMEOUT_NS,
+  PROTOCOL_INVALID_CONFIRM_CYCLES, STARTUP_GRACE_NS, STATUS_TIMEOUT_NS,
 )
 from opendbc.sunnypilot.car.tesla.ars408.models import (
   CycleResult, FilterStateHeader, FilterStateRecord, ObjectStatus, RadarStateSnapshot, TrackerResult,
@@ -96,14 +96,18 @@ def test_filter_and_cycle_state_is_internal_and_bounded() -> None:
   assert (diagnostics.handover_count, diagnostics.duplicate_suppression_count) == (2, 3)
 
 
-def test_invalid_protocol_is_not_reported_as_healthy_empty_space() -> None:
+def test_invalid_protocol_requires_two_cycles_and_recovers() -> None:
   diagnostics = ARS408Diagnostics(0)
   diagnostics.observe_radar_state(radar_state(), 0)
-  diagnostics.observe_status(ObjectStatus(0, 1, 2), 0)
+  for cycle in range(PROTOCOL_INVALID_CONFIRM_CYCLES - 1):
+    diagnostics.observe_status(ObjectStatus(0, cycle, 2), cycle)
+    diagnostics.observe_cycle(empty_cycle(invalid=True), tracker_result())
+    assert not diagnostics.snapshot(cycle, parser_valid=True).errors.wrong_config
+  diagnostics.observe_status(ObjectStatus(0, PROTOCOL_INVALID_CONFIRM_CYCLES, 2), PROTOCOL_INVALID_CONFIRM_CYCLES)
   diagnostics.observe_cycle(empty_cycle(invalid=True), tracker_result())
-  assert diagnostics.snapshot(0, parser_valid=True).errors.wrong_config
+  assert diagnostics.snapshot(PROTOCOL_INVALID_CONFIRM_CYCLES, parser_valid=True).errors.wrong_config
   diagnostics.observe_cycle(empty_cycle(), tracker_result())
-  assert not diagnostics.snapshot(0, parser_valid=True).errors.wrong_config
+  assert not diagnostics.snapshot(PROTOCOL_INVALID_CONFIRM_CYCLES, parser_valid=True).errors.wrong_config
 
 
 def test_missing_motion_feedback_is_temporary_and_recovers() -> None:

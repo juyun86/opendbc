@@ -13,6 +13,7 @@ STATUS_TIMEOUT_NS = 500_000_000
 RADAR_STATE_TIMEOUT_NS = 3_000_000_000
 CONFIG_GRACE_REPORTS = 10
 INTERFERENCE_CONFIRM_REPORTS = 10
+PROTOCOL_INVALID_CONFIRM_CYCLES = 2
 
 
 class ARS408Diagnostics:
@@ -29,6 +30,7 @@ class ARS408Diagnostics:
     self.exact_cycles = 0
     self.partial_cycles = 0
     self.invalid_cycles = 0
+    self.consecutive_invalid_cycles = 0
     self.protocol_invalid = False
     self.raw_object_count = 0
     self.class_counts: dict[int, int] = {}
@@ -78,6 +80,7 @@ class ARS408Diagnostics:
 
   def observe_cycle(self, cycle: CycleResult, tracker: TrackerResult) -> None:
     self.protocol_invalid = cycle.invalid
+    self.consecutive_invalid_cycles = self.consecutive_invalid_cycles + 1 if cycle.invalid else 0
     if cycle.invalid:
       self.invalid_cycles += 1
     elif cycle.exact:
@@ -114,7 +117,8 @@ class ARS408Diagnostics:
       state.temperature_error or state.temporary_error or state.motion_rx_state != 0 or
       self.interference_count >= INTERFERENCE_CONFIRM_REPORTS
     ))
-    wrong_config = self.protocol_invalid or bool(state and self.radar_state_count >= CONFIG_GRACE_REPORTS and (
+    wrong_config = (self.protocol_invalid and self.consecutive_invalid_cycles >= PROTOCOL_INVALID_CONFIRM_CYCLES) or bool(
+      state and self.radar_state_count >= CONFIG_GRACE_REPORTS and (
       state.sensor_id != ARS408_SENSOR_ID or state.output_type != 1 or not state.quality_enabled or
       state.max_distance_m != int(ARS408_MAX_DISTANCE_M)
     ))

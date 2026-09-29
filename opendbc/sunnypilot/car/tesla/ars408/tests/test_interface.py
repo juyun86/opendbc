@@ -78,8 +78,9 @@ def test_radar_state_faults_map_to_standard_errors() -> None:
 
 @pytest.mark.parametrize("invalid_status", [ObjectStatus(0, 1, 2), ObjectStatus(101, 1, 1)])
 def test_invalid_object_protocol_publishes_error_and_recovers(invalid_status: ObjectStatus) -> None:
-  radar = interface([radar_state(), invalid_status, ObjectStatus(0, 2, 1), ObjectStatus(0, 3, 1)])
-  result = radar.update(packets(3))
+  second_invalid = replace(invalid_status, measurement_counter=2)
+  radar = interface([radar_state(), invalid_status, second_invalid, ObjectStatus(0, 3, 1), ObjectStatus(0, 4, 1)])
+  result = radar.update(packets(4))
   assert result is not None and result.errors.wrongConfig and not result.points
   recovered = radar.update(packets(1))
   assert recovered is not None and not recovered.errors.wrongConfig

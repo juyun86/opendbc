@@ -112,6 +112,45 @@ def test_motion_tx_is_atomic_and_fail_closed() -> None:
   assert decode(standstill[0], "SpeedInformation")["RadarDevice_SpeedDirection"] == 0
 
 
+@pytest.mark.parametrize("speed", [0.02, 0.04, 0.06, 0.08, -0.04])
+def test_standstill_with_residual_wheel_speed_encodes_zero(speed: float) -> None:
+  tx = transmitter()
+  tx.update_yaw_rate(0.0, 1_000_000_000)
+  sends = tx.update(5, car_state(speed=speed, standstill=True), 1_000_000_000)
+  assert sends == [(0x300, bytes.fromhex("0000"), ARS408_BUS), (0x301, bytes.fromhex("8000"), ARS408_BUS)]
+
+
+@pytest.mark.parametrize("standstill", [False, True])
+@pytest.mark.parametrize("speed", [math.nan, math.inf, -math.inf, 85.01, -85.01])
+def test_invalid_raw_speed_is_rejected_before_standstill_normalization(speed: float, standstill: bool) -> None:
+  tx = transmitter()
+  tx.update_yaw_rate(0.0, 1_000_000_000)
+  assert tx.update(5, car_state(speed=speed, standstill=standstill), 1_000_000_000) == []
+
+
+@pytest.mark.parametrize(("speed", "gear", "wire_hex"), [
+  (0.0, structs.CarState.GearShifter.drive, "0000"),
+  (0.01, structs.CarState.GearShifter.drive, "0000"),
+  (-0.01, structs.CarState.GearShifter.reverse, "0000"),
+  (0.0101, structs.CarState.GearShifter.drive, "4001"),
+  (-0.0101, structs.CarState.GearShifter.reverse, "8001"),
+  (85.0, structs.CarState.GearShifter.drive, "509a"),
+])
+def test_motion_speed_quantization_preserves_direction(speed: float, gear: structs.CarState.GearShifter, wire_hex: str) -> None:
+  tx = transmitter()
+  tx.update_yaw_rate(0.0, 1_000_000_000)
+  assert tx.update(5, car_state(speed=speed, gear=gear), 1_000_000_000)[0][1].hex() == wire_hex
+
+
+def test_motion_speed_recovers_through_stop_and_start() -> None:
+  tx = transmitter()
+  for frame, speed, standstill, wire_hex in [(5, 0.04, False, "4002"), (10, 0.04, True, "0000"),
+                                            (15, 0.0, True, "0000"), (20, 0.04, False, "4002")]:
+    timestamp = frame * 10_000_000
+    tx.update_yaw_rate(0.0, timestamp)
+    assert tx.update(frame, car_state(speed=speed, standstill=standstill), timestamp)[0][1].hex() == wire_hex
+
+
 @pytest.mark.parametrize("yaw", [None, math.nan, math.inf, -math.inf, math.radians(101), math.radians(-101)])
 def test_invalid_source_never_falls_back_to_carstate_or_last_good_yaw(yaw) -> None:
   tx = transmitter()
