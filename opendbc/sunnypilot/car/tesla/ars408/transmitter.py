@@ -10,7 +10,8 @@ from opendbc.sunnypilot.car.tesla.values import TeslaFlagsSP
 MOTION_TX_INTERVAL_FRAMES = 5
 MAX_SPEED_MPS = 85.0
 MAX_ABS_YAW_RATE_DEG_S = 100.0
-MOTION_MAX_AGE_NS = 100_000_000
+# Keep one missed 20 Hz model/location update from invalidating healthy radar motion input.
+MOTION_MAX_AGE_NS = 150_000_000
 
 
 class ARS408Transmitter:
