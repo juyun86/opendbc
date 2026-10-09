@@ -35,7 +35,7 @@ class ARS408Parser:
       # for offline diagnostics. These metadata fields are not used by tracking.
       for address, required in (
         (ARS408_QUALITY, {"Obj_ID", "Obj_ProbOfExist", "Obj_MeasState"}),
-        (ARS408_EXTENDED, {"Obj_ID", "Obj_ArelLong", "Obj_Class"}),
+        (ARS408_EXTENDED, {"Obj_ID", "Obj_ArelLong", "Obj_Class", "Obj_Length", "Obj_Width"}),
       ):
         state = self.can_parser.message_states[address]
         state.signals = [signal for signal in state.signals if signal.name in required]
@@ -78,7 +78,8 @@ class ARS408Parser:
       )
     if address == ARS408_EXTENDED:
       if not self.diagnostic_fields:
-        return ObjectExtended(int(values["Obj_ID"]), float(values["Obj_ArelLong"]), int(values["Obj_Class"]))
+        return ObjectExtended(int(values["Obj_ID"]), float(values["Obj_ArelLong"]), int(values["Obj_Class"]),
+                              length_m=float(values["Obj_Length"]), width_m=float(values["Obj_Width"]))
       return ObjectExtended(
         int(values["Obj_ID"]), float(values["Obj_ArelLong"]), int(values["Obj_Class"]),
         sensor_a_rel_lat=float(values["Obj_ArelLat"]), sensor_orientation_deg=float(values["Obj_OrientationAngle"]),

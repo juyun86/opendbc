@@ -94,3 +94,20 @@ def test_version_is_diagnostic_only_and_does_not_close_object_cycle() -> None:
   assert result is not None and not result.errors.wrongConfig
   snapshot = radar.diagnostics.snapshot(0, parser_valid=True)
   assert snapshot.software_version == version and snapshot.exact_cycles == 1
+
+
+def test_batched_cycles_use_can_timestamps_for_high_speed_id_handover() -> None:
+  frames: list[ParsedFrame] = [
+    radar_state(), ObjectStatus(1, 1, 1), ObjectGeneral(10, 40.0, 0.0, -31.25, 0.0, 8.0, 1),
+    ObjectQuality(10, 4, 2), ObjectStatus(1, 2, 1), ObjectGeneral(20, 37.6, 0.0, -31.25, 0.0, 8.0, 1),
+    ObjectQuality(20, 4, 1), ObjectStatus(0, 3, 1),
+  ]
+  radar = interface(frames)
+  # Both cycles arrive in one update; its fixed clock cannot provide their dt.
+  first = (1_000_000_000, [(0x60A, b"", 1)] * 4)
+  second = (1_076_800_000, [(0x60A, b"", 1)] * 3)
+  third = (1_153_600_000, [(0x60A, b"", 1)])
+  result = radar.update([first, second, third])
+  assert result is not None and len(result.points) == 1
+  assert result.points[0].trackId == 10 and result.points[0].dRel == pytest.approx(37.6)
+  assert result.points[0].deprecated.measured

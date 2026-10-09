@@ -142,3 +142,98 @@ def test_partial_cycle_ages_only_missing_tracks() -> None:
   partial = replace(cycle(obj(1)), exact=False)
   result = tracker.update(partial)
   assert {track.raw_id: track.measured for track in result.tracks} == {1: True, 2: False}
+
+
+def test_recycled_id_new_target_does_not_inherit_identity_or_probability_gate() -> None:
+  tracker = ARS408Tracker()
+  old = obj(41, d_rel=91.2, v_rel=-31.5, dynamic_property=1, object_class=7)
+  tracker.update(cycle(old), timestamp_ns=1_000_000_000)
+  tracker.update(cycle(replace(old, general=replace(old.general, d_rel=88.8),
+                               quality=replace(old.quality, probability=2, measurement_state=3))), timestamp_ns=1_076_000_000)
+  new = obj(41, state=1, d_rel=118.0, y_rel=1.4, v_rel=0.75, object_class=7)
+  result = tracker.update(cycle(new), timestamp_ns=1_152_000_000)
+  assert len(result.tracks) == 1 and result.tracks[0].track_id != 41
+  assert result.tracks[0].measured and result.tracks[0].d_rel == 118.0
+
+  low_quality = ARS408Tracker()
+  low_quality.update(cycle(old), timestamp_ns=1_000_000_000)
+  rejected = low_quality.update(cycle(replace(new, quality=replace(new.quality, probability=2))), timestamp_ns=1_076_000_000)
+  assert not rejected.tracks and (41, "low_probability") in rejected.rejection_reasons
+
+
+def test_high_speed_id_handover_uses_elapsed_time_without_duplicate_old_point() -> None:
+  tracker = ARS408Tracker()
+  tracker.update(cycle(obj(10, d_rel=40.0, v_rel=-31.25, object_class=7)), timestamp_ns=1_000_000_000)
+  result = tracker.update(cycle(obj(20, state=1, d_rel=37.6, v_rel=-31.25, object_class=7)), timestamp_ns=1_076_800_000)
+  assert [(t.raw_id, t.track_id, t.measured) for t in result.tracks] == [(20, 10, True)]
+  assert result.handover_count == 1
+
+
+@pytest.mark.parametrize("elapsed_ns", [-1, 300_000_001])
+def test_invalid_association_time_does_not_transfer_identity(elapsed_ns: int) -> None:
+  tracker = ARS408Tracker()
+  tracker.update(cycle(obj(10, d_rel=40.0)), timestamp_ns=1_000_000_000)
+  result = tracker.update(cycle(obj(20, state=1, d_rel=40.0)), timestamp_ns=1_000_000_000 + elapsed_ns)
+  assert result.handover_count == 0
+  assert any(t.track_id == 20 for t in result.tracks)
+
+
+def test_one_old_track_matching_two_new_ids_has_no_order_dependent_handover() -> None:
+  tracker = ARS408Tracker()
+  tracker.update(cycle(obj(10, d_rel=40.0)))
+  result = tracker.update(cycle(obj(20, state=1, d_rel=39.5), obj(30, state=1, d_rel=40.5)))
+  assert result.handover_count == 0
+  assert next(t for t in result.tracks if t.raw_id == 10).measured is False
+
+
+def test_continuous_new_reports_and_recovery_after_one_missed_cycle_keep_identity() -> None:
+  tracker = ARS408Tracker()
+  tracker.update(cycle(obj(10, state=1, d_rel=40.0, v_rel=-31.25)), timestamp_ns=1_000_000_000)
+  continued = tracker.update(cycle(obj(10, state=1, d_rel=37.6, v_rel=-31.25)), timestamp_ns=1_076_800_000)
+  assert continued.tracks[0].track_id == 10
+  held = tracker.update(cycle(), timestamp_ns=1_153_600_000)
+  assert held.tracks[0].d_rel == 37.6 and not held.tracks[0].measured
+  recovered = tracker.update(cycle(obj(20, state=1, d_rel=32.8, v_rel=-31.25)), timestamp_ns=1_230_400_000)
+  assert [(t.raw_id, t.track_id) for t in recovered.tracks] == [(20, 10)]
+
+
+@pytest.mark.parametrize("state,probability", [(1, 2), (2, 0), (3, 4), (5, 2), (6, 4)])
+def test_unqualified_new_id_cannot_steal_established_identity(state: int, probability: int) -> None:
+  tracker = ARS408Tracker()
+  tracker.update(cycle(obj(10)))
+  result = tracker.update(cycle(obj(20, state=state, probability=probability)))
+  assert result.handover_count == 0
+  assert [(t.raw_id, t.track_id, t.measured) for t in result.tracks] == [(10, 10, False)]
+
+
+def test_low_quality_merge_cannot_inherit_established_probability_gate() -> None:
+  tracker = ARS408Tracker()
+  tracker.update(cycle(obj(10)))
+  result = tracker.update(cycle(obj(10, state=4), obj(20, state=5, probability=2)))
+  assert result.handover_count == 0
+  assert (20, "low_probability") in result.rejection_reasons
+
+
+def test_ambiguous_explicit_merge_does_not_transfer_identity() -> None:
+  tracker = ARS408Tracker()
+  tracker.update(cycle(obj(10)))
+  result = tracker.update(cycle(obj(10, state=4), obj(20, state=5), obj(30, state=5)))
+  assert result.handover_count == 0
+
+
+def test_new_measurement_wins_over_established_prediction_without_erasing_uncertainty() -> None:
+  tracker = ARS408Tracker()
+  tracker.update(cycle(obj(10)))
+  result = tracker.update(cycle(obj(10, state=3), obj(20, state=1)))
+  assert 20 in result.accepted_raw_ids and (10, "duplicate") in result.rejection_reasons
+  assert [(t.raw_id, t.measured) for t in result.tracks] == [(10, False), (20, True)]
+
+
+def test_long_prediction_cannot_refresh_identity_association_age() -> None:
+  tracker = ARS408Tracker()
+  tracker.update(cycle(obj(10)), timestamp_ns=1_000_000_000)
+  for timestamp_ns in (1_075_000_000, 1_150_000_000, 1_225_000_000, 1_300_000_000):
+    tracker.update(cycle(obj(10, state=3)), timestamp_ns=timestamp_ns)
+  result = tracker.update(cycle(obj(20, state=1)), timestamp_ns=1_375_000_000)
+  assert result.handover_count == 0
+  assert [(t.raw_id, t.track_id, t.measured) for t in result.tracks] == [(10, 10, False), (20, 20, True)]

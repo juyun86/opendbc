@@ -23,7 +23,7 @@ def test_runtime_parser_preserves_tracking_fields_without_changing_shared_dbc(pa
     "Obj_ID": 7, "Obj_ProbOfExist": 6, "Obj_MeasState": 2, "Obj_DistLong_rms": 15,
   })
   extended = packer.make_can_msg("Obj_3_Extended", ARS408_BUS, {
-    "Obj_ID": 7, "Obj_ArelLong": 0.2, "Obj_Class": 1, "Obj_Length": 4.2,
+    "Obj_ID": 7, "Obj_ArelLong": 0.2, "Obj_Class": 1, "Obj_Length": 4.2, "Obj_Width": 1.8,
   })
   for stamp in (1, 2):
     a, b = full.parse(stamp, quality), runtime.parse(stamp, quality)
@@ -32,7 +32,9 @@ def test_runtime_parser_preserves_tracking_fields_without_changing_shared_dbc(pa
     assert later_full.parse(stamp, quality) == a
     a, b = full.parse(stamp, extended), runtime.parse(stamp, extended)
     assert (a.raw_id, a.a_rel, a.object_class) == (b.raw_id, b.a_rel, b.object_class)
-    assert a.length_m == pytest.approx(4.2) and b.length_m is None
+    assert a.length_m == pytest.approx(4.2) and b.length_m == a.length_m
+    assert a.width_m == pytest.approx(1.8) and b.width_m == a.width_m
+    assert b.sensor_a_rel_lat is None and b.sensor_orientation_deg is None
     assert later_full.parse(stamp, extended) == a
 
 

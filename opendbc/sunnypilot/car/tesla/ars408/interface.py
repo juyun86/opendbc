@@ -59,7 +59,7 @@ class ARS408RadarInterface(RadarInterfaceBase):
         if cycle is None:
           continue
         max_distance_m = self._max_distance_m()
-        latest_result = self.tracker.update(cycle, max_distance_m=max_distance_m)
+        latest_result = self.tracker.update(cycle, max_distance_m=max_distance_m, timestamp_ns=timestamp)
         self.diagnostics.observe_cycle(cycle, latest_result)
 
     snapshot = self.diagnostics.snapshot(now_ns, parser_valid=self.parser.can_valid)

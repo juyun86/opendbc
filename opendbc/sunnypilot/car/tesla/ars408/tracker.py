@@ -15,6 +15,9 @@ STATIC_DYNAMIC_PROPERTIES = frozenset((1, 3, 5))
 
 DUPLICATE_LIMITS = (1.5, 0.6, 1.5, 0.8)
 HANDOVER_LIMITS = (2.5, 1.0, 2.5, 1.5)
+MAX_ASSOCIATION_AGE_NS = 300_000_000
+TRUCK_ECHO_CONFIRM_NS = 1_000_000_000
+TRUCK_ECHO_MAX_GAP_NS = 150_000_000
 
 
 @dataclass(slots=True)
@@ -25,13 +28,15 @@ class _TrackState:
   missed_cycles: int = 0
   measured: bool = True
   ever_measured: bool = True
+  observed_ns: int | None = None
+  measured_ns: int | None = None
 
 
 def _object_class(obj: AssembledObject) -> int:
   return obj.extended.object_class if obj.extended is not None else 7
 
 
-def _same_target(first: AssembledObject, second: AssembledObject, *, handover: bool = False) -> bool:
+def _same_target(first: AssembledObject, second: AssembledObject, *, handover: bool = False, elapsed_s: float = 0.0) -> bool:
   limits = list(HANDOVER_LIMITS if handover else DUPLICATE_LIMITS)
   first_class, second_class = _object_class(first), _object_class(second)
   if first_class == 7 or second_class == 7:
@@ -40,8 +45,8 @@ def _same_target(first: AssembledObject, second: AssembledObject, *, handover: b
     return False
   first_general, second_general = first.general, second.general
   deltas = (
-    abs(first_general.d_rel - second_general.d_rel),
-    abs(first_general.y_rel - second_general.y_rel),
+    abs(first_general.d_rel + first_general.v_rel * elapsed_s - second_general.d_rel),
+    abs(first_general.y_rel + first_general.yv_rel * elapsed_s - second_general.y_rel),
     abs(first_general.v_rel - second_general.v_rel),
     abs(first_general.yv_rel - second_general.yv_rel),
   )
@@ -81,12 +86,26 @@ class ARS408Tracker:
     self._next_track_id = 256
     self.handover_count = 0
     self.duplicate_suppression_count = 0
+    self._truck_echo_history: dict[tuple[int, int, int], tuple[int, int, float, int]] = {}
+    self._truck_echo_counter: int | None = None
 
-  def update(self, cycle: CycleResult, *, max_distance_m: float = ARS408_MAX_DISTANCE_M) -> TrackerResult:
+  def update(self, cycle: CycleResult, *, max_distance_m: float = ARS408_MAX_DISTANCE_M,
+             timestamp_ns: int | None = None) -> TrackerResult:
     # Invalid protocol data cannot refresh a track or suspend its expiry.
     objects = {} if cycle.invalid else {obj.raw_id: obj for obj in cycle.objects}
-    self._explicit_merge_handover(objects)
-    self._kinematic_handover(objects)
+    for raw_id, obj in objects.items():
+      track = self._tracks.get(raw_id)
+      if track is not None and obj.quality.measurement_state == MeasurementState.NEW:
+        elapsed_s = self._association_elapsed(track, timestamp_ns)
+        # A recycled sensor ID must not inherit the old object's identity or
+        # established-track probability gate. Continuous NEW reports may repeat.
+        if elapsed_s is None or not _same_target(track.obj, obj, handover=True, elapsed_s=elapsed_s):
+          del self._tracks[raw_id]
+    # New IDs must qualify independently before they can inherit an identity.
+    handover_objects = {raw_id: obj for raw_id, obj in objects.items() if raw_id in self._tracks or
+                        rejection_reason(obj, established=False, ever_measured=False, max_distance_m=max_distance_m) is None}
+    self._explicit_merge_handover(handover_objects, timestamp_ns)
+    self._kinematic_handover(handover_objects, timestamp_ns)
 
     accepted: dict[int, AssembledObject] = {}
     rejected: dict[int, RejectionReason] = {}
@@ -110,13 +129,17 @@ class ARS408Tracker:
       measured = state in (MeasurementState.NEW, MeasurementState.MEASURED, MeasurementState.NEW_FROM_MERGE)
       track = self._tracks.get(raw_id)
       if track is None:
-        track = _TrackState(raw_id, self._allocate_track_id(raw_id), obj, measured=measured, ever_measured=measured)
+        track = _TrackState(raw_id, self._allocate_track_id(raw_id), obj, measured=measured,
+                            ever_measured=measured, observed_ns=timestamp_ns, measured_ns=timestamp_ns if measured else None)
         self._tracks[raw_id] = track
       else:
         track.obj = obj
         track.missed_cycles = 0
         track.measured = measured
         track.ever_measured |= measured
+        track.observed_ns = timestamp_ns
+        if measured:
+          track.measured_ns = timestamp_ns
 
     for raw_id in list(self._tracks):
       if raw_id in accepted:
@@ -128,7 +151,82 @@ class ARS408Tracker:
         del self._tracks[raw_id]
         rejected.setdefault(raw_id, RejectionReason.TIMEOUT)
 
-    return self._result(tuple(sorted(accepted)), rejected)
+    # Keep the sensor tracks internally: a failed cluster condition must expose
+    # occupancy again immediately, including the ordinary missed-cycle grace.
+    truck_echoes = self._truck_echoes(cycle, timestamp_ns)
+    for raw_id in truck_echoes:
+      rejected[raw_id] = RejectionReason.DUPLICATE
+    self.duplicate_suppression_count += len(truck_echoes)
+    return self._result(tuple(sorted(set(accepted) - truck_echoes)), rejected, excluded=truck_echoes)
+
+  def _truck_echoes(self, cycle: CycleResult, timestamp_ns: int | None) -> set[int]:
+    fresh_measurement = cycle.status.measurement_counter != self._truck_echo_counter
+    self._truck_echo_counter = cycle.status.measurement_counter
+    if not cycle.exact or cycle.invalid or timestamp_ns is None:
+      self._truck_echo_history.clear()
+      return set()
+    echoes = [track for track in self._tracks.values() if track.obj.extended is not None
+              and _object_class(track.obj) != 2 and track.obj.general.dynamic_property == 0
+              and 0 < (track.obj.extended.length_m or 0.) <= 5.0
+              and 0 < (track.obj.extended.width_m or 0.) <= 2.5]
+    candidates: dict[int, list[tuple[_TrackState, _TrackState, _TrackState, float]]] = {}
+    for anchor in self._tracks.values():
+      a = anchor.obj
+      if (not anchor.measured or a.quality.measurement_state != MeasurementState.MEASURED
+          or a.extended is None or _object_class(a) != 2 or a.quality.probability < 6
+          or not 6.0 <= (a.extended.length_m or 0.) <= 25.0
+          or not 1.5 <= (a.extended.width_m or 0.) <= 3.5
+          or a.general.rcs < 15.0 or a.general.dynamic_property != 0):
+        continue
+      for body in self._tracks.values():
+        b = body.obj
+        spacing = b.general.d_rel - a.general.d_rel
+        if (body is anchor or not body.measured or b.quality.measurement_state != MeasurementState.MEASURED
+            or b.extended is None or _object_class(b) not in (1, 2)
+            or b.quality.probability < 5 or b.general.dynamic_property != 0
+            or not 3.0 <= spacing <= min(a.extended.length_m, 12.0)
+            or abs(b.general.y_rel - a.general.y_rel) > min(a.extended.width_m / 2 + .3, 1.5)
+            or abs(b.general.v_rel - a.general.v_rel) > .25
+            or abs(b.general.yv_rel - a.general.yv_rel) > .5):
+          continue
+        for echo in echoes:
+          e = echo.obj
+          if (echo is anchor or echo is body or e.quality.measurement_state not in (MeasurementState.MEASURED, MeasurementState.PREDICTED)
+              or e.general.rcs > a.general.rcs - 10.0
+              or abs((e.general.d_rel - a.general.d_rel) - 2 * spacing) > .6
+              or abs(e.general.y_rel - a.general.y_rel) > min(a.extended.width_m / 2 + .3, 1.5)
+              or abs(e.general.v_rel - a.general.v_rel) > .25
+              or abs(e.general.yv_rel - a.general.yv_rel) > .5):
+            continue
+          candidates.setdefault(echo.raw_id, []).append((anchor, body, echo, spacing))
+    history = {}
+    suppressed = set()
+    for raw_id, matches in candidates.items():
+      if len(matches) != 1:
+        continue
+      anchor, body, echo, spacing = matches[0]
+      key = (anchor.track_id, body.track_id, echo.track_id)
+      previous = self._truck_echo_history.get(key)
+      continuous = (previous is not None and 0 < timestamp_ns - previous[3] <= TRUCK_ECHO_MAX_GAP_NS
+                    and abs(spacing - previous[2]) <= .4)
+      # Repeated sensor cycles retain evidence only within its original age
+      # bound. They cannot create a relation, refresh it or complete confirmation.
+      if not fresh_measurement and (not continuous or timestamp_ns - previous[1] > TRUCK_ECHO_MAX_GAP_NS):
+        continue
+      since = previous[0] if continuous else timestamp_ns
+      confirmed = continuous and (previous[1] - since >= TRUCK_ECHO_CONFIRM_NS or
+                                  (fresh_measurement and echo.measured and timestamp_ns - since >= TRUCK_ECHO_CONFIRM_NS))
+      # A prediction may retain a proven relation, never establish one.
+      if not echo.measured and not confirmed:
+        continue
+      history[key] = (since, timestamp_ns if fresh_measurement else previous[1],
+                      previous[2] if continuous else spacing, timestamp_ns)
+      # Measured echoes remain available to the existing lead fusion. Only a
+      # confirmed prediction can be removed from the independent occupancy list.
+      if confirmed and not echo.measured:
+        suppressed.add(raw_id)
+    self._truck_echo_history = history
+    return suppressed
 
   def _allocate_track_id(self, raw_id: int) -> int:
     if raw_id not in self._used_track_ids:
@@ -148,28 +246,49 @@ class ARS408Tracker:
     self._tracks[new_raw_id] = track
     self.handover_count += 1
 
-  def _explicit_merge_handover(self, objects: dict[int, AssembledObject]) -> None:
+  def _explicit_merge_handover(self, objects: dict[int, AssembledObject], timestamp_ns: int | None) -> None:
     deleted = [raw_id for raw_id, obj in objects.items()
                if obj.quality.measurement_state == MeasurementState.DELETED_FOR_MERGE and raw_id in self._tracks]
     new = [raw_id for raw_id, obj in objects.items()
            if obj.quality.measurement_state == MeasurementState.NEW_FROM_MERGE and raw_id not in self._tracks]
+    candidates_by_new = {}
     for new_raw_id in new:
       candidates = [old_raw_id for old_raw_id in deleted if old_raw_id in self._tracks and
+                    self._association_elapsed(self._tracks[old_raw_id], timestamp_ns) is not None and
                     _same_target(objects[old_raw_id], objects[new_raw_id], handover=True)]
-      if len(candidates) == 1:
+      candidates_by_new[new_raw_id] = candidates
+    for new_raw_id, candidates in candidates_by_new.items():
+      if len(candidates) == 1 and sum(candidates[0] in ids for ids in candidates_by_new.values()) == 1:
         self._transfer(candidates[0], new_raw_id)
 
-  def _kinematic_handover(self, objects: dict[int, AssembledObject]) -> None:
+  @staticmethod
+  def _association_elapsed(track: _TrackState, timestamp_ns: int | None) -> float | None:
+    if timestamp_ns is None or track.observed_ns is None:
+      return 0.0
+    if track.measured_ns is not None and not 0 <= timestamp_ns - track.measured_ns <= MAX_ASSOCIATION_AGE_NS:
+      return None
+    elapsed_ns = timestamp_ns - track.observed_ns
+    # Prediction is for association only; it never refreshes a measured point
+    # or extends the existing missing-cycle grace. Reject old/reversed time.
+    return elapsed_ns / 1e9 if 0 <= elapsed_ns <= MAX_ASSOCIATION_AGE_NS else None
+
+  def _kinematic_handover(self, objects: dict[int, AssembledObject], timestamp_ns: int | None) -> None:
     active_ids = {raw_id for raw_id, obj in objects.items()
                   if obj.quality.measurement_state not in (MeasurementState.DELETED, MeasurementState.DELETED_FOR_MERGE)}
     missing = [raw_id for raw_id in self._tracks if raw_id not in active_ids]
     new = [raw_id for raw_id in active_ids if raw_id not in self._tracks]
+    candidates_by_new = {}
     for new_raw_id in new:
-      candidates = [old_raw_id for old_raw_id in missing if old_raw_id in self._tracks and
-                    _same_target(self._tracks[old_raw_id].obj, objects[new_raw_id])]
-      if len(candidates) == 1:
+      candidates = []
+      for old_raw_id in missing:
+        track = self._tracks[old_raw_id]
+        elapsed_s = self._association_elapsed(track, timestamp_ns)
+        if elapsed_s is not None and _same_target(track.obj, objects[new_raw_id], elapsed_s=elapsed_s):
+          candidates.append(old_raw_id)
+      candidates_by_new[new_raw_id] = candidates
+    for new_raw_id, candidates in candidates_by_new.items():
+      if len(candidates) == 1 and sum(candidates[0] in ids for ids in candidates_by_new.values()) == 1:
         self._transfer(candidates[0], new_raw_id)
-        missing.remove(candidates[0])
 
   def _suppress_duplicates(self, objects: dict[int, AssembledObject]) -> set[int]:
     suppressed: set[int] = set()
@@ -190,15 +309,17 @@ class ARS408Tracker:
           break
     return suppressed
 
-  def _rank(self, raw_id: int, obj: AssembledObject) -> tuple[bool, int, int, int]:
+  def _rank(self, raw_id: int, obj: AssembledObject) -> tuple[bool, bool, int, int, int]:
     state_rank = {MeasurementState.MEASURED: 4, MeasurementState.NEW: 3,
                   MeasurementState.NEW_FROM_MERGE: 3, MeasurementState.PREDICTED: 1}.get(
       obj.quality.measurement_state, 0,
     )
-    return raw_id in self._tracks, state_rank, obj.quality.probability, -raw_id
+    return obj.quality.measurement_state != MeasurementState.PREDICTED, raw_id in self._tracks, state_rank, obj.quality.probability, -raw_id
 
-  def _result(self, accepted_raw_ids: tuple[int, ...], rejected: dict[int, RejectionReason]) -> TrackerResult:
-    tracks = tuple(self._to_output(track) for track in sorted(self._tracks.values(), key=lambda item: item.track_id))
+  def _result(self, accepted_raw_ids: tuple[int, ...], rejected: dict[int, RejectionReason], *,
+              excluded: set[int] | None = None) -> TrackerResult:
+    tracks = tuple(self._to_output(track) for track in sorted(self._tracks.values(), key=lambda item: item.track_id)
+                   if excluded is None or track.raw_id not in excluded)
     return TrackerResult(
       tracks=tracks, accepted_raw_ids=accepted_raw_ids,
       rejection_reasons=tuple((raw_id, reason.value) for raw_id, reason in sorted(rejected.items())),
