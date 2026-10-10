@@ -56,10 +56,11 @@ class TeslaCAN:
     return self.packer.make_can_msg("DAS_steeringControl", CANBUS.party, values)
 
   def create_stock_lateral_handoff(self, steering_angle):
+    control_type = 6 if self.CP.flags & TeslaFlags.LEGACY_DAS_STEERING else 7
     values = {
       "DAS_steeringAngleRequest": -steering_angle,
       "DAS_steeringHapticRequest": 0,
-      "DAS_steeringControlType": 7,  # Internal handoff marker; panda safety blocks this frame.
+      "DAS_steeringControlType": control_type,  # Internal handoff marker; panda safety blocks this frame.
     }
     return self.packer.make_can_msg("DAS_steeringControl", CANBUS.party, values)
 

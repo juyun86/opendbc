@@ -41,6 +41,7 @@ def round_angle(apply_angle, can_offset=0):
 class TestTeslaSafetyBase(common.CarSafetyTest, common.AngleSteeringSafetyTest, common.LongitudinalAccelSafetyTest):
   SAFETY_PARAM = 0
   STEER_TYPE_SHIFT = 0  # legacy firmware uses a 2-bit field, one bit up from the 3-bit signal
+  HANDOFF_STEER_TYPE = 7
 
   RELAY_MALFUNCTION_ADDRS = {0: (MSG_DAS_steeringControl, MSG_APS_eacMonitor)}
   FWD_BLACKLISTED_ADDRS = {2: [MSG_DAS_steeringControl, MSG_APS_eacMonitor]}
@@ -109,6 +110,15 @@ class TestTeslaSafetyBase(common.CarSafetyTest, common.AngleSteeringSafetyTest, 
               "EPAS3S_sysStatusCounter": self.cnt_epas % 16}
     self.__class__.cnt_epas += 1
     return self.packer.make_can_msg_safety("EPAS3S_sysStatus", 0, values)
+
+  def test_stock_angle_control_passthrough_and_tx_lockout(self):
+    stock_angle_control = self._angle_cmd_msg(0, 1, bus=2)
+    self.assertTrue(self._rx(stock_angle_control))
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, MSG_DAS_steeringControl))
+
+    self.safety.set_controls_allowed(True)
+    self.safety.set_controls_allowed_lateral(True)
+    self.assertFalse(self._tx(self._angle_cmd_msg(0, 1, bus=0)))
 
   def _user_brake_msg(self, brake, quality_flag: bool = True):
     values = {"ESP_driverBrakeApply": 2 if brake else 1}
@@ -657,6 +667,7 @@ class TestTeslaStockSafety(TestTeslaSafetyBase):
 class TestTeslaLegacyDasSteeringStockSafety(TestTeslaStockSafety):
   SAFETY_PARAM = TeslaSafetyFlags.LEGACY_DAS_STEERING
   STEER_TYPE_SHIFT = 1
+  HANDOFF_STEER_TYPE = 3
 
 
 class TestTeslaLongitudinalSafety(TestTeslaSafetyBase):
@@ -736,7 +747,7 @@ class TestTeslaLongitudinalSafety(TestTeslaSafetyBase):
     self.safety.set_controls_allowed_lateral(True)
 
     stock = self._angle_cmd_msg(0, True, bus=2)
-    handoff = self._angle_cmd_msg(0, 7, bus=0)
+    handoff = self._angle_cmd_msg(0, self.HANDOFF_STEER_TYPE, bus=0)
     self.assertTrue(self._rx(stock))
     self.assertEqual(-1, self.safety.safety_fwd_hook(2, MSG_DAS_steeringControl))
 
@@ -755,7 +766,7 @@ class TestTeslaLongitudinalSafety(TestTeslaSafetyBase):
     self.safety.set_controls_allowed(True)
     self.safety.set_controls_allowed_lateral(True)
 
-    handoff = self._angle_cmd_msg(0, 7, bus=0)
+    handoff = self._angle_cmd_msg(0, self.HANDOFF_STEER_TYPE, bus=0)
     self.assertFalse(self._tx(handoff))
     self.assertEqual(0, self.safety.safety_fwd_hook(2, MSG_DAS_steeringControl))
 
@@ -834,6 +845,7 @@ class TestTeslaLongitudinalSafety(TestTeslaSafetyBase):
 class TestTeslaLegacyDasSteeringLongitudinalSafety(TestTeslaLongitudinalSafety):
   SAFETY_PARAM = TeslaSafetyFlags.LONG_CONTROL | TeslaSafetyFlags.LEGACY_DAS_STEERING
   STEER_TYPE_SHIFT = 1
+  HANDOFF_STEER_TYPE = 3
 
 
 class TestTeslaIgnition(unittest.TestCase):

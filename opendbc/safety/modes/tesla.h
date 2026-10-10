@@ -343,7 +343,7 @@ static void tesla_rx_hook(const CANPacket_t *msg) {
 
     // DAS_steeringControl
     if (msg->addr == 0x488U) {
-      int steering_control_type = msg->data[2] >> 6;
+      int steering_control_type = tesla_get_steer_ctrl_type(msg->data[2]);
       bool tesla_stock_steering_control_now = steering_control_type != 0;  // "NONE"
 
       // Only consider rising edges while controls are not allowed
@@ -414,9 +414,11 @@ static bool tesla_tx_hook(const CANPacket_t *msg) {
     bool steer_control_enabled = (steer_control_type == 1) ||  // ANGLE_CONTROL
                                  (steer_control_type == 2);    // LANE_KEEP_ASSIST
 
-    // Control type 7 is reserved as an internal AP lateral handoff marker.
+    // Control type 3 on legacy firmware and 7 on newer firmware are reserved as
+    // internal AP lateral handoff markers.
     // It opens OEM steering forwarding and is never transmitted to the vehicle.
-    if (tesla_ap_hybrid_lateral_handoff && (steer_control_type == 7)) {
+    int handoff_control_type = tesla_legacy_das_steering ? 3 : 7;
+    if (tesla_ap_hybrid_lateral_handoff && (steer_control_type == handoff_control_type)) {
       tesla_ap_stock_lateral_active = true;
       return false;
     }

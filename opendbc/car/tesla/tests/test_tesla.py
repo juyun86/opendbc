@@ -15,7 +15,7 @@ from opendbc.car.tesla.interface import CarInterface
 from opendbc.car.tesla.fingerprints import FW_VERSIONS
 from opendbc.car.tesla.radar_interface import RADAR_START_ADDR
 from opendbc.car.tesla.teslacan import TeslaCAN, create_sccm_left_stalk
-from opendbc.car.tesla.values import CANBUS, CAR, LEGACY_DAS_STEERING_FW
+from opendbc.car.tesla.values import CANBUS, CAR, LEGACY_DAS_STEERING_FW, TeslaFlags
 from opendbc.sunnypilot.car.tesla.carstate_ext import (AP_HYBRID_EXIT_RECOVERY_CONFIRM_SAMPLES, CarStateExt,
                                                         TeslaLongitudinalSource, publish_tesla_road_context)
 from opendbc.sunnypilot.car.tesla import dynamic_acc_debug
@@ -968,3 +968,7 @@ class TestTeslaLongitudinalHandoff(unittest.TestCase):
     _, actual, _ = tesla_can.create_stock_lateral_handoff(12.5)
 
     self.assertEqual(7, (actual[2] >> 5) & 0x07)
+
+    legacy_tesla_can = TeslaCAN(SimpleNamespace(flags=TeslaFlags.LEGACY_DAS_STEERING), CANPacker("tesla_model3_party"))
+    _, legacy_actual, _ = legacy_tesla_can.create_stock_lateral_handoff(12.5)
+    self.assertEqual(3, legacy_actual[2] >> 6)
